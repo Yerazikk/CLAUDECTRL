@@ -127,3 +127,46 @@ fatal: 'C:/Users/yeraz/Documents/GitHub/.worktrees/Scam-feature-edit-the-readme-
 [2026-09-11T07:29:42.445Z] [INFO] ClaudeCTRL server running on http://localhost:4173
 [2026-09-11T07:29:50.658Z] [INFO] ClaudeCTRL starting up...
 [2026-09-11T07:29:50.801Z] [INFO] ClaudeCTRL server running on http://localhost:4173
+[2026-09-11T07:45:06.252Z] [INFO] ClaudeCTRL starting up...
+[2026-09-11T07:45:06.399Z] [INFO] ClaudeCTRL server running on http://localhost:4173
+[2026-09-11T07:45:10.672Z] [INFO] Fetched Scam
+[2026-09-11T07:45:33.899Z] [WARN] Stale worktree found at C:\Users\yeraz\Documents\GitHub\.worktrees\Scam-feature-create-a-new-file-ju, cleaning up before recreating
+[2026-09-11T07:45:33.952Z] [INFO] Removed worktree at C:\Users\yeraz\Documents\GitHub\.worktrees\Scam-feature-create-a-new-file-ju
+[2026-09-11T07:45:34.084Z] [INFO] Created worktree at C:\Users\yeraz\Documents\GitHub\.worktrees\Scam-feature-create-a-new-file-ju for branch feature/create-a-new-file-ju
+[2026-09-11T07:45:34.086Z] [INFO] Spawning Claude for task b2fd4878-b959-486a-acc3-bd3e7859f9ba in C:\Users\yeraz\Documents\GitHub\.worktrees\Scam-feature-create-a-new-file-ju
+[2026-09-11T07:45:43.117Z] [INFO] Claude process for task b2fd4878-b959-486a-acc3-bd3e7859f9ba exited with code 0
+[2026-09-11T07:46:02.274Z] [INFO] Merged feature/create-a-new-file-ju into main in C:\Users\yeraz\Documents\GitHub\Scam
+[2026-09-11T07:46:04.635Z] [INFO] Pushed main in C:\Users\yeraz\Documents\GitHub\Scam
+[2026-09-11T07:46:04.719Z] [INFO] Removed worktree at C:\Users\yeraz\Documents\GitHub\.worktrees\Scam-feature-create-a-new-file-ju
+[2026-09-11T07:46:46.013Z] [INFO] Created worktree at C:\Users\yeraz\Documents\GitHub\.worktrees\Scam-feature-in-the-document-new for branch feature/in-the-document-new
+[2026-09-11T07:46:46.015Z] [INFO] Spawning Claude for task 44b15ec1-2404-47e9-b24a-d60486d1ce1b in C:\Users\yeraz\Documents\GitHub\.worktrees\Scam-feature-in-the-document-new
+[2026-09-11T07:46:58.793Z] [INFO] Fetched Scam
+[2026-09-11T07:47:00.221Z] [INFO] Claude process for task 44b15ec1-2404-47e9-b24a-d60486d1ce1b exited with code 0
+[2026-09-11T07:47:19.219Z] [INFO] Spawning Claude for task 44b15ec1-2404-47e9-b24a-d60486d1ce1b in C:\Users\yeraz\Documents\GitHub\.worktrees\Scam-feature-in-the-document-new
+[2026-09-11T07:47:25.995Z] [INFO] Claude process for task 44b15ec1-2404-47e9-b24a-d60486d1ce1b exited with code 0
+[2026-09-11T07:47:26.826Z] [INFO] Spawning Claude for task 44b15ec1-2404-47e9-b24a-d60486d1ce1b in C:\Users\yeraz\Documents\GitHub\.worktrees\Scam-feature-in-the-document-new
+[2026-09-11T07:47:33.426Z] [INFO] Claude process for task 44b15ec1-2404-47e9-b24a-d60486d1ce1b exited with code 0
+[2026-09-11T07:47:37.444Z] [INFO] Merged feature/in-the-document-new into main in C:\Users\yeraz\Documents\GitHub\Scam
+[2026-09-11T07:47:39.587Z] [INFO] Pushed main in C:\Users\yeraz\Documents\GitHub\Scam
+[2026-09-11T07:47:39.683Z] [INFO] Removed worktree at C:\Users\yeraz\Documents\GitHub\.worktrees\Scam-feature-in-the-document-new
+[2026-09-11T08:13:41.213Z] [INFO] ClaudeCTRL starting up...
+[2026-09-11T08:13:41.360Z] [INFO] ClaudeCTRL server running on http://localhost:4173
+[2026-09-11T08:13:46.691Z] [INFO] ClaudeCTRL starting up...
+[2026-09-11T08:13:46.832Z] [INFO] ClaudeCTRL server running on http://localhost:4173
+[2026-09-11T08:15:46.897Z] [INFO] ClaudeCTRL starting up...
+[2026-09-11T08:15:47.043Z] [INFO] ClaudeCTRL server running on http://localhost:4173
+[2026-09-11T10:18:53.326Z] [INFO] ClaudeCTRL starting up...
+[2026-09-11T10:18:53.507Z] [INFO] ClaudeCTRL server running on http://localhost:4173
+[2026-09-11T10:19:10.102Z] [INFO] Fetched Scam
+[2026-09-11T10:19:27.953Z] [INFO] Created worktree at C:\Users\yeraz\Documents\GitHub\.worktrees\Scam-feature-delete-all-files-exe for branch feature/delete-all-files-exe
+[2026-09-11T10:19:27.955Z] [INFO] Spawning Claude for task d9e72bb2-505f-4521-b302-8ed34ce538c8 in C:\Users\yeraz\Documents\GitHub\.worktrees\Scam-feature-delete-all-files-exe
+[2026-09-11T10:19:37.146Z] [INFO] Claude process for task d9e72bb2-505f-4521-b302-8ed34ce538c8 exited with code 0
+[2026-09-11T10:20:14.064Z] [INFO] Merged feature/delete-all-files-exe into main in C:\Users\yeraz\Documents\GitHub\Scam
+[2026-09-11T10:20:16.227Z] [INFO] Pushed main in C:\Users\yeraz\Documents\GitHub\Scam
+[2026-09-11T10:20:16.328Z] [INFO] Removed worktree at C:\Users\yeraz\Documents\GitHub\.worktrees\Scam-feature-delete-all-files-exe
+[2026-09-11T10:20:25.038Z] [INFO] ClaudeCTRL starting up...
+[2026-09-11T10:20:25.182Z] [INFO] ClaudeCTRL server running on http://localhost:4173
+[2026-09-11T10:20:27.768Z] [INFO] ClaudeCTRL starting up...
+[2026-09-11T10:20:27.908Z] [INFO] ClaudeCTRL server running on http://localhost:4173
+[2026-09-11T10:20:31.277Z] [INFO] ClaudeCTRL starting up...
+[2026-09-11T10:20:31.436Z] [INFO] ClaudeCTRL server running on http://localhost:4173

@@ -1,0 +1,805 @@
+╭───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Plan to implement                                                                                                                                                                                                         │
+│                                                                                                                                                                                                                           │
+│ ClaudeCTRL: Multi-Session Terminal Manager Redesign                                                                                                                                                                       │
+│                                                                                                                                                                                                                           │
+│ Context                                                                                                                                                                                                                   │
+│                                                                                                                                                                                                                           │
+│ The current ProjectView is a chatbot-like interface showing one task at a time with message bubbles. The user wants to emulate having 4+ Claude terminals open simultaneously -- a session manager, not a chatbot. Each   │
+│ session should be a compact panel showing status, errors, and controls. Verbose logs hidden by default, errors prominent, approval easy.                                                                                  │
+│                                                                                                                                                                                                                           │
+│ Architecture Changes                                                                                                                                                                                                      │
+│                                                                                                                                                                                                                           │
+│ Server: Enable Concurrent Tasks Per Repo                                                                                                                                                                                  │
+│                                                                                                                                                                                                                           │
+│ apps/server/src/managers/tasks.ts                                                                                                                                                                                         │
+│ - Remove repoLocks Map and withRepoLock() -- each task already gets its own worktree, so no checkout conflicts                                                                                                            │
+│ - Replace direct runTask() call in createTask() (no serialization wrapper)                                                                                                                                                │
+│ - Stop writing activeTaskId on repo -- derive repo status from active tasks instead                                                                                                                                       │
+│ - Add deriveRepoStatus(repoId) helper: queries tasks, returns worst status (working > validating > ready_for_review > idle)                                                                                               │
+│ - Add pauseTask() -- kills Claude process (like stop), but sets status 'paused' signaling intent to resume                                                                                                                │
+│ - Add resumeTask() -- resumes a paused/stopped task using its existing sessionId (unlike retryTask which creates a new task)                                                                                              │
+│ - Add archiveTask() / unarchiveTask() -- sets boolean archived flag on task                                                                                                                                               │
+│ - Update all updateRepo() calls to use deriveRepoStatus() instead of hardcoded status + activeTaskId                                                                                                                      │
+│                                                                                                                                                                                                                           │
+│ apps/server/src/routes/repos.ts -- 4 new endpoints:                                                                                                                                                                       │
+│ - POST /api/repos/:id/tasks/:taskId/pause                                                                                                                                                                                 │
+│ - POST /api/repos/:id/tasks/:taskId/resume                                                                                                                                                                                │
+│ - POST /api/repos/:id/tasks/:taskId/archive                                                                                                                                                                               │
+│ - POST /api/repos/:id/tasks/:taskId/unarchive                                                                                                                                                                             │
+│                                                                                                                                                                                                                           │
+│ Shared Types                                                                                                                                                                                                              │
+│                                                                                                                                                                                                                           │
+│ packages/shared/src/types.ts                                                                                                                                                                                              │
+│ - Add 'paused' to TaskStatus union                                                                                                                                                                                        │
+│ - Add archived: boolean to Task interface                                                                                                                                                                                 │
+│ - Remove activeTaskId from Repository (keep in DB, stop using in code)                                                                                                                                                    │
+│                                                                                                                                                                                                                           │
+│ packages/shared/src/events.ts (or inline in types)                                                                                                                                                                        │
+│ - Add task.paused and task.archived event types                                                                                                                                                                           │
+│                                                                                                                                                                                                                           │
+│ Database                                                                                                                                                                                                                  │
+│                                                                                                                                                                                                                           │
+│ apps/server/src/db/schema.ts                                                                                                                                                                                              │
+│ - Add migration: ALTER TABLE tasks ADD COLUMN archived INTEGER NOT NULL DEFAULT 0                                                                                                                                         │
+│                                                                                                                                                                                                                           │
+│ Web: API + Store                                                                                                                                                                                                          │
+│                                                                                                                                                                                                                           │
+│ apps/web/src/utils/api.ts -- add pauseTask, resumeTask, archiveTask, unarchiveTask methods                                                                                                                                │
+│                                                                                                                                                                                                                           │
+│ apps/web/src/hooks/useStore.ts -- handle task.paused and task.archived events in applyEvent()                                                                                                                             │
+│                                                                                                                                                                                                                           │
+│ Web: UI Rewrite                                                                                                                                                                                                           │
+│                                                                                                                                                                                                                           │
+│ apps/web/src/components/SessionPanel.tsx (NEW) -- individual session card:                                                                                                                                                │
+│ - Header: StatusDot + status label + task title (truncated) + action buttons                                                                                                                                              │
+│ - Body:                                                                                                                                                                                                                   │
+│   - Error: red box with error message (shown when failed)                                                                                                                                                                 │
+│   - Review: last assistant message + prominent Approve button                                                                                                                                                             │
+│   - Question: if Claude's last message ends with ?, show it + response input                                                                                                                                              │
+│   - Links: extract URLs from lastResult, render as clickable pill buttons                                                                                                                                                 │
+│ - Terminal drawer: hidden by default, toggle to show last 100 lines                                                                                                                                                       │
+│ - Inline input: compact text input for responding to Claude (no voice, just text + send)                                                                                                                                  │
+│ - Action buttons by status:                                                                                                                                                                                               │
+│   - Working/Validating/Queued: Pause, Stop                                                                                                                                                                                │
+│   - Ready for review: Approve, give feedback                                                                                                                                                                              │
+│   - Done: Archive                                                                                                                                                                                                         │
+│   - Failed: error shown, Retry, Archive                                                                                                                                                                                   │
+│   - Paused/Stopped: Resume, Archive                                                                                                                                                                                       │
+│                                                                                                                                                                                                                           │
+│ apps/web/src/pages/ProjectView.tsx -- complete rewrite:                                                                                                                                                                   │
+│ - Top bar: Back button, repo name + branch, "+ New Session" button/input                                                                                                                                                  │
+│ - Session grid: grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)) -- auto-responsive                                                                                                                           │
+│   - Shows active tasks + recent done tasks (not archived)                                                                                                                                                                 │
+│   - Each is a <SessionPanel>                                                                                                                                                                                              │
+│ - Archived section: collapsible at bottom, shows archived tasks with unarchive option                                                                                                                                     │
+│ - Empty state: "No sessions -- start one" with input                                                                                                                                                                      │
+│                                                                                                                                                                                                                           │
+│ apps/web/src/components/StatusDot.tsx -- add paused color (amber)                                                                                                                                                         │
+│                                                                                                                                                                                                                           │
+│ Implementation Order                                                                                                                                                                                                      │
+│                                                                                                                                                                                                                           │
+│ 1. Types + DB migration (foundation)                                                                                                                                                                                      │
+│ 2. Server: tasks.ts (concurrency, pause/resume/archive)                                                                                                                                                                   │
+│ 3. Server: routes (new endpoints)                                                                                                                                                                                         │
+│ 4. Web: api.ts + useStore.ts (client plumbing)                                                                                                                                                                            │
+│ 5. Web: StatusDot (quick update)                                                                                                                                                                                          │
+│ 6. Web: SessionPanel.tsx (new component)                                                                                                                                                                                  │
+│ 7. Web: ProjectView.tsx (rewrite)                                                                                                                                                                                         │
+│                                                                                                                                                                                                                           │
+│ Verification                                                                                                                                                                                                              │
+│                                                                                                                                                                                                                           │
+│ 1. npm run build -- both server and web compile clean                                                                                                                                                                     │
+│ 2. npm test -- existing 13 tests still pass                                                                                                                                                                               │
+│ 3. Manual: open repo, create 2+ sessions simultaneously, verify both panels appear and update in real-time                                                                                                                │
+│ 4. Manual: pause a session, verify it stops, resume it, verify it continues                                                                                                                                               │
+│ 5. Manual: archive a done session, verify it moves to archived section, unarchive it                                                                                                                                      │
+│ 6. Manual: verify errors show prominently, logs are hidden until toggled                                                                                                                                                  │
+╰───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+● I'll start by reading the key files to understand the current implementation before making changes.
+  ⎿  Interrupted · What should Claude do instead?
+                                                                                                                                                                                                                             
+❯ /extra-usage                                                                                                                                                                                                               
+  ⎿  Login successful                                                                                                                                                                                                        
+                                                                                                                                                                                                                             
+❯ i wanna be able to queue tasks so a session has like small bug fixes i can just keep adding to it as its working no need to create a new session.                                                                          
+                                                                                                                                                                                                                             
+● Let me read the current codebase to understand how tasks and sessions work before implementing.                                                                                                                            
+                                                                                                                                                                                                                             
+● Read 3 files (ctrl+o to expand)                                                                                                                                                                                            
+                                                                                                                                                                                                                             
+● Now let me read the remaining key files in parallel.                                                                                                                                                                       
+                                                                                                                                                                                                                             
+● Read 6 files (ctrl+o to expand)             
+                                                                                                                                                                                                                             
+● Let me read the remaining files I need.                         
+                                                                                                                                                                                                                             
+● Read 3 files (ctrl+o to expand)                                                                                                                                                                                            
+                                                                                                                                                                                                                             
+● Now I have a clear picture. Let me implement everything. I'll integrate the task queuing concept: sessions are persistent workspaces (worktree + branch + Claude session) that can have a queue of tasks. Multiple sessions
+   per repo run in parallel.                                                                                                                                                                                                 
+                                                                                                                                                                                                                             
+❯ so in your plan you said remove lock but would that work if the queue is there?                                                                                                                                            
+                                                                                                                                                                                                                             
+● Good question. You're right - the plan said to remove the global per-repo lock, but we still need per-session locks for the task queue. The idea is:                                                                       
+                                                                                                                                                                                                                             
+  - Remove the per-repo lock (which currently prevents ANY concurrent tasks on the same repo)                                                                                                                                
+  - Add per-session locks (which serialize tasks within the same session/worktree)                                                                                                                                           
+                                                                                                                                                                                                                             
+  So two sessions on the same repo can work in parallel (each has its own worktree), but within one session, tasks execute one after another. That's exactly what makes the queue work.                                      
+                                                                                                                                                                                                                             
+  Let me start implementing.                                                                                                                                                                                                 
+                                                                                                                                                                                                                             
+● Write(packages\shared\src\types.ts)                                                                                                                                                                                        
+  ⎿  Added 5 lines, removed 1 line 
+       9    | 'ready_for_review'                                                                                                                                                                                      
+      10    | 'done'                                                                                                                                                                                                  
+      11    | 'failed'                                                                                                                                                                                                
+      12 -  | 'stopped';                                                                                                                                                                                              
+      12 +  | 'stopped'                                                                                                                                                                                                      
+      13 +  | 'paused';                                                                                                                                                                                               
+      14                                                                                                                                                                                                                     
+      15  export type SessionStatus = 'active' | 'idle' | 'stopped';                                                                                                                                                       
+      16  
+     ...
+      35    branch: string | null;
+      36    worktreePath: string | null;
+      37    sessionId: string | null;
+      38 +  sessionRef: string | null;                                                                                                                                                                                
+      39    lastMessage: string | null;
+      40    lastResult: string | null;
+      41 +  archived: boolean;                                                                                                                                                                                        
+      42    createdAt: string;
+      43    updatedAt: string;
+      44    startedAt: string | null;
+     ...
+      51    status: SessionStatus;
+      52    title: string | null;
+      53    worktreePath: string | null;
+      54 +  branch: string | null;                                                                                                                                                                                    
+      55    createdAt: string;
+      56    updatedAt: string;
+      57  }
+
+● Write(packages\shared\src\events.ts)                             
+  ⎿  Added 2 lines                 
+      10    | { type: 'task.done'; task: Task }                                                                                                                                                                       
+      11    | { type: 'task.failed'; taskId: string; error: string }                                                                                                                                                  
+      12    | { type: 'task.stopped'; taskId: string }                                                                                                                                                                
+      13 +  | { type: 'task.paused'; taskId: string }                                                                                                                                                                 
+      14 +  | { type: 'task.archived'; taskId: string; archived: boolean }                                                                                                                                                   
+      15    | { type: 'task.deleted'; taskId: string }                                                                                                                                                                
+      16    | { type: 'task.output'; taskId: string; line: string }                                                                                                                                                          
+      17    | { type: 'session.started'; session: Session }                                                                                                                                                                
+
+● Now the DB migration:                                            
+                                   
+● Read 1 file (ctrl+o to expand)                                   
+                                              
+● Update(apps\server\src\db\schema.ts)                             
+  ⎿  Added 1 line, removed 1 line                                  
+      12      );                                                                                                                                                                                                             
+      13    `);                                                                                                                                                                                                       
+      14                                                                                                                                                                                                                     
+      15 -  const migrations: Array<{ name: string; sql: string }> = [                                                                                                                                                     
+      15 +  const migrations: Array<{ name: string; sql: string; }> = [                                                                                                                                                      
+      16      {                                                                                                                                                                                                              
+      17        name: '001_initial',                                                                                                                                                                                         
+      18        sql: `                                                                                                                                                                                                       
+                                                                                                                                                                                                                           
+● Update(apps\server\src\db\schema.ts)                             
+  ⎿  Added 9 lines                 
+      134          CREATE INDEX IF NOT EXISTS idx_git_events_repo_id ON git_events(repo_id);                                                                                                                          
+      135        `,                                                                                                                                                                                                   
+      136      },                                                                                                                                                                                                     
+      137 +    {                                                                                                                                                                                                      
+      138 +      name: '002_sessions_and_archive',                                                                                                                                                                           
+      139 +      sql: `                                                                                                                                                                                               
+      140 +        ALTER TABLE tasks ADD COLUMN archived INTEGER NOT NULL DEFAULT 0;                                                                                                                                         
+      141 +        ALTER TABLE tasks ADD COLUMN session_ref TEXT REFERENCES sessions(id);                                                                                                                                  
+      142 +        ALTER TABLE sessions ADD COLUMN branch TEXT;                                                                                                                                                       
+      143 +        CREATE INDEX IF NOT EXISTS idx_tasks_session_ref ON tasks(session_ref);                                                                                                                            
+      144 +      `,                                                                                                                                                                                                   
+      145 +    },                                                                                                                                                                                                     
+      146    ];
+      147  
+      148    const applied = new Set(
+
+● Now the big one - rewriting tasks.ts:                            
+                                   
+✻ Rewriting tasks manager… (3m 7s · ↓ 3.0k tokens · thought for 34s) 
+  ⎿  ◼ Rewrite tasks.ts with session locks + pause/resume/archive
+                                                                                                                                                                                                                             
+● How is Claude doing this session? (optional)                                                                                                                                                                               
+  1: Bad    2: Fine   3: Good   0: Dismiss                                                                                                                                                                                   
+                                                                                                                                                                                                                             
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯                                                                                                                                                                                                                            
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt · ctrl+t to hide tasks                                                                                                                                    
+                                                                                                                                                                                                                             
+                                                Now the big one - rewriting tasks.ts:                            
+                                   
+● Write(apps\server\src\managers\tasks.ts)                           
+  ⎿  Added 227 lines, removed 82 lines                           
+      18    pushMain,                                                                                                                                                                                                        
+      19    commit,                                                                                                                                                                                                          
+      20  } from './git';                                                                                                                                                                                                    
+      21 -import type { Task, Repository } from '@claudectrl/shared';                                                                                                                                                        
+      21 +import type { Task, Repository, Session } from '@claudectrl/shared';                                                                                                                                               
+      22                                                                                                                                                                                                                     
+      23  // In-memory abort controllers for running tasks                                                                                                                                                                   
+      24  const activeAbortControllers = new Map<string, AbortController>();                                                                                                                                                 
+      25                                                                                                                                                                                                                     
+      26 -// Per-repo task execution lock: prevents concurrent same-checkout runs                                                                                                                                            
+      27 -// key = repoId, value = promise of the current running task                                                                                                                                                       
+      28 -const repoLocks = new Map<string, Promise<void>>();                                                                                                                                                                
+      26 +// Per-session task execution lock: serializes tasks within the same session                                                                                                                                       
+      27 +// key = sessionRef (our session ID), value = promise chain                                                                                                                                                 
+      28 +const sessionLocks = new Map<string, Promise<void>>();                                                                                                                                                      
+      29  
+      30 -async function withRepoLock(repoId: string, fn: () => Promise<void>): Promise<void> {                                                                                                                       
+      31 -  const existing = repoLocks.get(repoId) ?? Promise.resolve();                                                                                                                                              
+      30 +function withSessionLock(sessionRef: string, fn: () => Promise<void>): Promise<void> {                                                                                                                      
+      31 +  const existing = sessionLocks.get(sessionRef) ?? Promise.resolve();                                                                                                                                       
+      32    const next = existing.then(() => fn()).catch(() => {});
+      33 -  repoLocks.set(repoId, next);                                                                                                                                                                              
+      34 -  await next;                                                                                                                                                                                               
+      33 +  sessionLocks.set(sessionRef, next);                                                                                                                                                                       
+      34 +  return next;                                                                                                                                                                                              
+      35  }
+      36  
+      37  function dbRowToTask(row: Record<string, unknown>): Task {
+     ...
+      43      branch: row.branch as string | null,
+      44      worktreePath: row.worktree_path as string | null,
+      45      sessionId: row.session_id as string | null,
+      46 +    sessionRef: row.session_ref as string | null,                                                                                                                                                           
+      47      lastMessage: row.last_message as string | null,
+      48      lastResult: row.last_result as string | null,
+      49 +    archived: Boolean(row.archived),                                                                                                                                                                        
+      50      createdAt: row.created_at as string,
+      51      updatedAt: row.updated_at as string,
+      52      startedAt: row.started_at as string | null,
+     ...
+      68    };
+      69  }
+      70  
+      71 +function dbRowToSession(row: Record<string, unknown>): Session {                                                                                                                                            
+      72 +  return {                                                                                                                                                                                                  
+      73 +    id: row.id as string,                                                                                                                                                                                   
+      74 +    repoId: row.repo_id as string,                                                                                                                                                                          
+      75 +    taskId: row.task_id as string | null,                                                                                                                                                                   
+      76 +    claudeSessionId: row.claude_session_id as string | null,                                                                                                                                                
+      77 +    status: row.status as Session['status'],                                                                                                                                                                
+      78 +    title: row.title as string | null,                                                                                                                                                                      
+      79 +    worktreePath: row.worktree_path as string | null,                                                                                                                                                       
+      80 +    branch: row.branch as string | null,                                                                                                                                                                    
+      81 +    createdAt: row.created_at as string,                                                                                                                                                                    
+      82 +    updatedAt: row.updated_at as string,                                                                                                                                                                    
+      83 +  };                                                                                                                                                                                                        
+      84 +}                                                                                                                                                                                                           
+      85 +                                                                                                                                                                                                            
+      86  export function getTask(taskId: string): Task | null {
+      87    const db = getDb();
+      88    const row = db.prepare('SELECT * FROM tasks WHERE id = ?').get(taskId) as Record<string, unknown> | undefined;
+     ...
+       95    return (db.prepare("SELECT * FROM tasks WHERE status IN ('queued','working','validating') ORDER BY created_at ASC").all() as Record<string, unknown>[]).map(dbRowToTask);
+       96  }
+       97  
+       98 +export function getSession(sessionId: string): Session | null {                                                                                                                                            
+       99 +  const db = getDb();                                                                                                                                                                                      
+      100 +  const row = db.prepare('SELECT * FROM sessions WHERE id = ?').get(sessionId) as Record<string, unknown> | undefined;                                                                                     
+      101 +  return row ? dbRowToSession(row) : null;                                                                                                                                                                 
+      102 +}                                                                                                                                                                                                          
+      103 +                                                                                                                                                                                                           
+      104 +export function getRepoSessions(repoId: string): Session[] {                                                                                                                                               
+      105 +  const db = getDb();                                                                                                                                                                                      
+      106 +  return (db.prepare('SELECT * FROM sessions WHERE repo_id = ? ORDER BY created_at DESC').all(repoId) as Record<string, unknown>[]).map(dbRowToSession);                                                   
+      107 +}                                                                                                                                                                                                          
+      108 +                                                                                                                                                                                                           
+      109  function updateTask(taskId: string, updates: Partial<Task>): Task {
+      110    const db = getDb();
+      111    const fields: string[] = [];
+     ...
+      104    if (updates.branch !== undefined) { fields.push('branch = ?'); values.push(updates.branch); }
+      105    if (updates.worktreePath !== undefined) { fields.push('worktree_path = ?'); values.push(updates.worktreePath); }
+      106    if (updates.sessionId !== undefined) { fields.push('session_id = ?'); values.push(updates.sessionId); }
+      107 +  if (updates.sessionRef !== undefined) { fields.push('session_ref = ?'); values.push(updates.sessionRef); }                                                                                               
+      108    if (updates.lastMessage !== undefined) { fields.push('last_message = ?'); values.push(updates.lastMessage); }
+      109    if (updates.lastResult !== undefined) { fields.push('last_result = ?'); values.push(updates.lastResult); }
+      110    if (updates.startedAt !== undefined) { fields.push('started_at = ?'); values.push(updates.startedAt); }
+      111    if (updates.completedAt !== undefined) { fields.push('completed_at = ?'); values.push(updates.completedAt); }
+      112 +  if (updates.archived !== undefined) { fields.push('archived = ?'); values.push(updates.archived ? 1 : 0); }                                                                                              
+      113    fields.push("updated_at = datetime('now')");
+      114  
+      115    db.prepare(`UPDATE tasks SET ${fields.join(', ')} WHERE id = ?`).run(...values, taskId);
+     ...
+      127    db.prepare(`UPDATE repositories SET ${fields.join(', ')} WHERE id = ?`).run(...values, repoId);
+      128  }
+      129  
+      130 +function updateSession(sessionId: string, updates: Partial<Session>): void {                                                                                                                               
+      131 +  const db = getDb();                                                                                                                                                                                      
+      132 +  const fields: string[] = [];                                                                                                                                                                             
+      133 +  const values: unknown[] = [];                                                                                                                                                                            
+      134 +  if (updates.taskId !== undefined) { fields.push('task_id = ?'); values.push(updates.taskId); }                                                                                                           
+      135 +  if (updates.claudeSessionId !== undefined) { fields.push('claude_session_id = ?'); values.push(updates.claudeSessionId); }                                                                               
+      136 +  if (updates.status !== undefined) { fields.push('status = ?'); values.push(updates.status); }                                                                                                            
+      137 +  if (updates.title !== undefined) { fields.push('title = ?'); values.push(updates.title); }                                                                                                               
+      138 +  if (updates.worktreePath !== undefined) { fields.push('worktree_path = ?'); values.push(updates.worktreePath); }                                                                                         
+      139 +  if (updates.branch !== undefined) { fields.push('branch = ?'); values.push(updates.branch); }                                                                                                            
+      140 +  fields.push("updated_at = datetime('now')");                                                                                                                                                             
+      141 +  db.prepare(`UPDATE sessions SET ${fields.join(', ')} WHERE id = ?`).run(...values, sessionId);                                                                                                           
+      142 +}                                                                                                                                                                                                          
+      143 +                                                                                                                                                                                                           
+      144 +/** Derive repo status from its active tasks (no more hardcoded activeTaskId) */                                                                                                                           
+      145 +export function deriveRepoStatus(repoId: string): Repository['status'] {                                                                                                                                   
+      146 +  const db = getDb();                                                                                                                                                                                      
+      147 +  const statuses = (db.prepare(                                                                                                                                                                            
+      148 +    "SELECT DISTINCT status FROM tasks WHERE repo_id = ? AND status IN ('working','validating','queued','ready_for_review','paused')"                                                                      
+      149 +  ).all(repoId) as { status: string }[]).map(r => r.status);                                                                                                                                               
+      150 +                                                                                                                                                                                                           
+      151 +  if (statuses.includes('working') || statuses.includes('validating')) return 'working';                                                                                                                   
+      152 +  if (statuses.includes('queued')) return 'working';                                                                                                                                                       
+      153 +  if (statuses.includes('ready_for_review')) return 'ready_for_review';                                                                                                                                    
+      154 +  return 'idle';                                                                                                                                                                                           
+      155 +}                                                                                                                                                                                                          
+      156 +                                                                                                                                                                                                           
+      157 +function syncRepoStatus(repoId: string): void {                                                                                                                                                            
+      158 +  const status = deriveRepoStatus(repoId);                                                                                                                                                                 
+      159 +  updateRepo(repoId, { status });                                                                                                                                                                          
+      160 +  const repo = getRepo(repoId);                                                                                                                                                                            
+      161 +  if (repo) broker.publish({ type: 'repo.updated', repo });                                                                                                                                                
+      162 +}                                                                                                                                                                                                          
+      163 +                                                                                                                                                                                                           
+      164  function publishTaskStatus(task: Task, message?: string): void {
+      165    broker.publish({ type: 'task.status', taskId: task.id, status: task.status, message });
+      166 -  const repo = getRepo(task.repoId);                                                                                                                                                                       
+      167 -  if (repo) broker.publish({ type: 'repo.updated', repo });                                                                                                                                                
+      166 +  syncRepoStatus(task.repoId);                                                                                                                                                                             
+      167  }
+      168  
+      169  function loadPrompt(promptPath: string): string {
+     ...
+      176      db.prepare(
+      177        "UPDATE tasks SET status = 'failed', last_result = ?, completed_at = datetime('now'), updated_at = datetime('now') WHERE id = ?"
+      178      ).run('Server restarted — task was interrupted', taskId);
+      179 -    db.prepare(                                                                                                                                                                                            
+      180 -      "UPDATE repositories SET status = 'idle', active_task_id = NULL, updated_at = datetime('now') WHERE id = ?"                                                                                          
+      181 -    ).run(repoId);                                                                                                                                                                                         
+      179 +    // Sync repo status via derive instead of hardcoding idle                                                                                                                                              
+      180 +    const status = deriveRepoStatus(repoId);                                                                                                                                                               
+      181 +    updateRepo(repoId, { status, activeTaskId: null });                                                                                                                                                    
+      182      logger.info(`Marked interrupted task ${taskId} as failed`);
+      183    }
+      184  }
+      185  
+      186 -export async function createTask(repoId: string, userMessage: string): Promise<Task> {                                                                                                                     
+      186 +/**                                                                                                                                                                                                        
+      187 + * Create a task, optionally within an existing session (for queuing).                                                                                                                                     
+      188 + * If sessionRef is provided, the task joins that session's queue.                                                                                                                                         
+      189 + * Otherwise, a new session + worktree is created.                                                                                                                                                         
+      190 + */                                                                                                                                                                                                        
+      191 +export async function createTask(repoId: string, userMessage: string, sessionRef?: string): Promise<Task> {                                                                                                
+      192    const db = getDb();
+      193    const repo = getRepo(repoId);
+      194    if (!repo) throw new Error(`Repository ${repoId} not found`);
+     ...
+      192    const title = userMessage.slice(0, 80);
+      193  
+      194    db.prepare(`
+      195 -    INSERT INTO tasks (id, repo_id, title, status, last_message)                                                                                                                                           
+      196 -    VALUES (?, ?, ?, 'queued', ?)                                                                                                                                                                          
+      197 -  `).run(taskId, repoId, title, userMessage);                                                                                                                                                              
+      195 +    INSERT INTO tasks (id, repo_id, title, status, last_message, session_ref)                                                                                                                              
+      196 +    VALUES (?, ?, ?, 'queued', ?, ?)                                                                                                                                                                       
+      197 +  `).run(taskId, repoId, title, userMessage, sessionRef ?? null);                                                                                                                                          
+      198  
+      199    // Save user message
+      200    db.prepare(`
+     ...
+      205    const task = getTask(taskId)!;
+      206    broker.publish({ type: 'task.created', task });
+      207  
+      208 -  // Start task in background, serialized per repo (tasks with worktrees don't block other worktree tasks)                                                                                                 
+      209 -  withRepoLock(repoId, () => runTask(task, repo, userMessage)).catch((err) => {                                                                                                                            
+      210 -    logger.error(`Task ${taskId} failed unexpectedly`, err);                                                                                                                                               
+      211 -  });                                                                                                                                                                                                      
+      208 +  if (sessionRef) {                                                                                                                                                                                        
+      209 +    // Queue within existing session — use session lock to serialize                                                                                                                                       
+      210 +    withSessionLock(sessionRef, () => runTask(task, repo, userMessage, false, sessionRef)).catch((err) => {                                                                                                
+      211 +      logger.error(`Task ${taskId} failed unexpectedly`, err);                                                                                                                                             
+      212 +    });                                                                                                                                                                                                    
+      213 +  } else {                                                                                                                                                                                                 
+      214 +    // New independent task — no lock needed, creates its own worktree                                                                                                                                     
+      215 +    runTask(task, repo, userMessage).catch((err) => {                                                                                                                                                      
+      216 +      logger.error(`Task ${taskId} failed unexpectedly`, err);                                                                                                                                             
+      217 +    });                                                                                                                                                                                                    
+      218 +  }                                                                                                                                                                                                        
+      219  
+      220    return task;
+      221  }
+     ...
+      244    broker.publish({ type: 'task.stopped', taskId });
+      245  }
+      246  
+      247 -async function runTask(task: Task, repo: Repository, userMessage: string, isResume = false): Promise<void> {                                                                                               
+      247 +export async function pauseTask(taskId: string): Promise<void> {                                                                                                                                           
+      248 +  const controller = activeAbortControllers.get(taskId);                                                                                                                                                   
+      249 +  if (controller) {                                                                                                                                                                                        
+      250 +    controller.abort();                                                                                                                                                                                    
+      251 +    activeAbortControllers.delete(taskId);                                                                                                                                                                 
+      252 +  }                                                                                                                                                                                                        
+      253 +  const task = updateTask(taskId, { status: 'paused' });                                                                                                                                                   
+      254 +  publishTaskStatus(task);                                                                                                                                                                                 
+      255 +  broker.publish({ type: 'task.paused', taskId });                                                                                                                                                         
+      256 +}                                                                                                                                                                                                          
+      257 +                                                                                                                                                                                                           
+      258 +export async function resumeTask(taskId: string): Promise<void> {                                                                                                                                          
+      259 +  const task = getTask(taskId);                                                                                                                                                                            
+      260 +  if (!task) throw new Error(`Task ${taskId} not found`);                                                                                                                                                  
+      261 +  if (!['paused', 'stopped'].includes(task.status)) {                                                                                                                                                      
+      262 +    throw new Error('Only paused or stopped tasks can be resumed');                                                                                                                                        
+      263 +  }                                                                                                                                                                                                        
+      264 +  if (!task.sessionId) {                                                                                                                                                                                   
+      265 +    throw new Error('No Claude session to resume — use retry instead');                                                                                                                                    
+      266 +  }                                                                                                                                                                                                        
+      267 +                                                                                                                                                                                                           
+      268 +  const repo = getRepo(task.repoId);                                                                                                                                                                       
+      269 +  if (!repo) throw new Error('Repo not found');                                                                                                                                                            
+      270 +                                                                                                                                                                                                           
+      271 +  const message = task.lastMessage ?? task.title;                                                                                                                                                          
+      272 +  const updated = updateTask(taskId, { status: 'working', completedAt: null });                                                                                                                            
+      273 +  publishTaskStatus(updated, 'Resuming...');                                                                                                                                                               
+      274 +                                                                                                                                                                                                           
+      275 +  runTask(updated, repo, message, true).catch((err) => {                                                                                                                                                   
+      276 +    logger.error(`Task ${taskId} resume failed`, err);                                                                                                                                                     
+      277 +  });                                                                                                                                                                                                      
+      278 +}                                                                                                                                                                                                          
+      279 +                                                                                                                                                                                                           
+      280 +export async function archiveTask(taskId: string): Promise<void> {                                                                                                                                         
+      281 +  const task = getTask(taskId);                                                                                                                                                                            
+      282 +  if (!task) throw new Error(`Task ${taskId} not found`);                                                                                                                                                  
+      283 +  updateTask(taskId, { archived: true });                                                                                                                                                                  
+      284 +  broker.publish({ type: 'task.archived', taskId, archived: true });                                                                                                                                       
+      285 +}                                                                                                                                                                                                          
+      286 +                                                                                                                                                                                                           
+      287 +export async function unarchiveTask(taskId: string): Promise<void> {                                                                                                                                       
+      288 +  const task = getTask(taskId);                                                                                                                                                                            
+      289 +  if (!task) throw new Error(`Task ${taskId} not found`);                                                                                                                                                  
+      290 +  updateTask(taskId, { archived: false });                                                                                                                                                                 
+      291 +  broker.publish({ type: 'task.archived', taskId, archived: false });                                                                                                                                      
+      292 +}                                                                                                                                                                                                          
+      293 +                                                                                                                                                                                                           
+      294 +async function runTask(task: Task, repo: Repository, userMessage: string, isResume = false, sessionRef?: string): Promise<void> {                                                                          
+      295    const db = getDb();
+      296    const controller = new AbortController();
+      297    activeAbortControllers.set(task.id, controller);
+      298  
+      299    try {
+      300 -    // Determine working directory (use worktree if exists, else create one for new tasks)                                                                                                                 
+      300      let workDir = repo.path;
+      301      let branch = task.branch;
+      302 +    let claudeSessionIdToResume: string | undefined;                                                                                                                                                       
+      303  
+      304 -    if (!isResume) {                                                                                                                                                                                       
+      305 -      // Create branch + worktree for new tasks                                                                                                                                                            
+      304 +    if (isResume) {                                                                                                                                                                                        
+      305 +      // Resume: reuse existing worktree + session                                                                                                                                                         
+      306 +      workDir = task.worktreePath ?? repo.path;                                                                                                                                                            
+      307 +      branch = task.branch;                                                                                                                                                                                
+      308 +      claudeSessionIdToResume = task.sessionId ?? undefined;                                                                                                                                               
+      309 +    } else if (sessionRef) {                                                                                                                                                                               
+      310 +      // Queued task in existing session: reuse session's worktree + Claude session                                                                                                                        
+      311 +      const session = getSession(sessionRef);                                                                                                                                                              
+      312 +      if (session) {                                                                                                                                                                                       
+      313 +        workDir = session.worktreePath ?? repo.path;                                                                                                                                                       
+      314 +        branch = session.branch;                                                                                                                                                                           
+      315 +        claudeSessionIdToResume = session.claudeSessionId ?? undefined;                                                                                                                                    
+      316 +        updateTask(task.id, { worktreePath: workDir !== repo.path ? workDir : null, branch, sessionRef });                                                                                                 
+      317 +      }                                                                                                                                                                                                    
+      318 +    } else {                                                                                                                                                                                               
+      319 +      // New task: create branch + worktree + session                                                                                                                                                      
+      320        const branchType = detectBranchType(userMessage);
+      321        const slug = userMessage.slice(0, 20).toLowerCase().replace(/[^a-z0-9 ]/g, '').trim().replace(/\s+/g, '-');
+      322        branch = getBranchName(branchType, slug);
+     ...
+      266        fs.mkdirSync(path.dirname(worktreePath), { recursive: true });
+      267  
+      268        try {
+      269 -        // Clean up stale worktree from a previous crashed run if it already exists                                                                                                                        
+      269          if (fs.existsSync(worktreePath)) {
+      270            logger.warn(`Stale worktree found at ${worktreePath}, cleaning up before recreating`);
+      271            removeWorktree(repo.path, worktreePath);
+     ...
+      274          createWorktree(repo.path, branch, worktreePath);
+      275          workDir = worktreePath;
+      276  
+      277 -        // Remove any stale DB row for this path before inserting                                                                                                                                          
+      277          db.prepare('DELETE FROM worktrees WHERE path = ?').run(worktreePath);
+      278          db.prepare(`
+      279            INSERT INTO worktrees (id, repo_id, task_id, path, branch, active)
+     ...
+      287          workDir = repo.path;
+      288          branch = null;
+      289        }
+      290 -    } else {                                                                                                                                                                                               
+      291 -      workDir = task.worktreePath ?? repo.path;                                                                                                                                                            
+      292 -      branch = task.branch;                                                                                                                                                                                
+      290 +                                                                                                                                                                                                           
+      291 +      // Create the session record                                                                                                                                                                         
+      292 +      const sessId = newId();                                                                                                                                                                              
+      293 +      db.prepare(`                                                                                                                                                                                         
+      294 +        INSERT INTO sessions (id, repo_id, task_id, claude_session_id, status, title, worktree_path, branch)                                                                                               
+      295 +        VALUES (?, ?, ?, NULL, 'active', ?, ?, ?)                                                                                                                                                          
+      296 +      `).run(sessId, repo.id, task.id, task.title, workDir !== repo.path ? workDir : null, branch);                                                                                                        
+      297 +      updateTask(task.id, { sessionRef: sessId });                                                                                                                                                         
+      298 +      // Update local reference for this run                                                                                                                                                               
+      299 +      sessionRef = sessId;                                                                                                                                                                                 
+      300      }
+      301  
+      302      const updatedTask = updateTask(task.id, {
+     ...
+      299        startedAt: task.startedAt ?? new Date().toISOString(),
+      300      });
+      301  
+      302 -    updateRepo(repo.id, {                                                                                                                                                                                  
+      303 -      status: 'working',                                                                                                                                                                                   
+      304 -      activeTaskId: task.id,                                                                                                                                                                               
+      305 -      currentBranch: branch ?? getCurrentBranch(repo.path),                                                                                                                                                
+      306 -    });                                                                                                                                                                                                    
+      307 -                                                                                                                                                                                                           
+      302 +    syncRepoStatus(repo.id);                                                                                                                                                                               
+      303      publishTaskStatus(updatedTask, 'Starting Claude...');
+      304      broker.publish({ type: 'task.started', task: updatedTask });
+      305  
+     ...
+      314        taskId: task.id,
+      315        workDir,
+      316        prompt,
+      317 -      sessionId: isResume ? task.sessionId ?? undefined : undefined,                                                                                                                                       
+      317 +      sessionId: claudeSessionIdToResume,                                                                                                                                                                  
+      318        onStatusUpdate: (status) => {
+      319          broker.publish({ type: 'task.status', taskId: task.id, status: 'working', message: status });
+      320        },
+      321 -      onSessionId: (sessionId) => {                                                                                                                                                                        
+      322 -        updateTask(task.id, { sessionId });                                                                                                                                                                
+      323 -        db.prepare(`                                                                                                                                                                                       
+      324 -          INSERT OR IGNORE INTO sessions (id, repo_id, task_id, claude_session_id, status, title)                                                                                                          
+      325 -          VALUES (?, ?, ?, ?, 'active', ?)                                                                                                                                                                 
+      326 -        `).run(newId(), repo.id, task.id, sessionId, task.title);                                                                                                                                          
+      321 +      onSessionId: (claudeSessId) => {                                                                                                                                                                     
+      322 +        updateTask(task.id, { sessionId: claudeSessId });                                                                                                                                                  
+      323 +        // Update the session record with Claude's session ID                                                                                                                                              
+      324 +        if (sessionRef) {                                                                                                                                                                                  
+      325 +          updateSession(sessionRef, { claudeSessionId: claudeSessId, taskId: task.id });                                                                                                                   
+      326 +        }                                                                                                                                                                                                  
+      327        },
+      328        signal: controller.signal,
+      329      });
+      330  
+      331 -    if (controller.signal.aborted) return; // Was stopped                                                                                                                                                  
+      331 +    if (controller.signal.aborted) return; // Was stopped/paused                                                                                                                                           
+      332  
+      333      if (result.sessionId) {
+      334        updateTask(task.id, { sessionId: result.sessionId });
+      335 +      if (sessionRef) {                                                                                                                                                                                    
+      336 +        updateSession(sessionRef, { claudeSessionId: result.sessionId });                                                                                                                                  
+      337 +      }                                                                                                                                                                                                    
+      338      }
+      339  
+      340      // Save assistant response
+     ...
+      346  
+      347      if (!result.success) {
+      348        const failed = updateTask(task.id, { status: 'failed', completedAt: new Date().toISOString() });
+      349 -      updateRepo(repo.id, { status: 'idle', activeTaskId: null });                                                                                                                                         
+      349 +      syncRepoStatus(repo.id);                                                                                                                                                                             
+      350        publishTaskStatus(failed, result.error);
+      351        broker.publish({ type: 'task.failed', taskId: task.id, error: result.error ?? 'Unknown error' });
+      352        return;
+      353      }
+      354  
+      355      // Validate
+      356 -    await runValidation(task.id, repo, workDir);                                                                                                                                                           
+      356 +    await runValidation(task.id, repo, workDir, sessionRef);                                                                                                                                               
+      357  
+      358    } catch (err: unknown) {
+      359      if (controller.signal.aborted) return;
+      360      const msg = err instanceof Error ? err.message : String(err);
+      361      logger.error(`Task ${task.id} error`, err);
+      362      const failed = updateTask(task.id, { status: 'failed', completedAt: new Date().toISOString() });
+      363 -    updateRepo(task.repoId, { status: 'idle', activeTaskId: null });                                                                                                                                       
+      363 +    syncRepoStatus(task.repoId);                                                                                                                                                                           
+      364      publishTaskStatus(failed, msg);
+      365      broker.publish({ type: 'task.failed', taskId: task.id, error: msg });
+      366    } finally {
+     ...
+      375    return 'feature';
+      376  }
+      377  
+      378 -async function runValidation(taskId: string, repo: Repository, workDir: string): Promise<void> {                                                                                                           
+      378 +async function runValidation(taskId: string, repo: Repository, workDir: string, sessionRef?: string): Promise<void> {                                                                                      
+      379    const db = getDb();
+      380    const cfg = getConfig();
+      381    const repoCfg = loadRepoConfig(repo.path);
+     ...
+      384    const validationCmds = [commands.lint, commands.test, commands.build].filter(Boolean) as string[];
+      385  
+      386    if (validationCmds.length === 0) {
+      387 -    // Auto-detect                                                                                                                                                                                         
+      387      if (fs.existsSync(path.join(workDir, 'package.json'))) {
+      388        try {
+      389          const pkgJson = JSON.parse(fs.readFileSync(path.join(workDir, 'package.json'), 'utf8'));
+     ...
+      396    }
+      397  
+      398    if (validationCmds.length === 0) {
+      399 -    // No validation commands, go directly to review                                                                                                                                                       
+      399      await markReadyForReview(taskId, repo);
+      400      return;
+      401    }
+     ...
+      414        const errMsg = e instanceof Error ? e.message : String(e);
+      415        logger.warn(`Validation failed for task ${taskId}: ${cmd}`, errMsg);
+      416  
+      417 -      // Ask Claude to fix                                                                                                                                                                                 
+      417        const currentTask = getTask(taskId);
+      418        if (!currentTask) return;
+      419  
+     ...
+      427          onStatusUpdate: (status) => {
+      428            broker.publish({ type: 'task.status', taskId, status: 'working', message: status });
+      429          },
+      430 -        onSessionId: (sessionId) => {                                                                                                                                                                      
+      431 -          updateTask(taskId, { sessionId });                                                                                                                                                               
+      430 +        onSessionId: (claudeSessId) => {                                                                                                                                                                   
+      431 +          updateTask(taskId, { sessionId: claudeSessId });                                                                                                                                                 
+      432 +          if (sessionRef) {                                                                                                                                                                                
+      433 +            updateSession(sessionRef, { claudeSessionId: claudeSessId });                                                                                                                                  
+      434 +          }                                                                                                                                                                                                
+      435          },
+      436        });
+      437  
+      438        if (!result.success) {
+      439          const failed = updateTask(taskId, { status: 'failed', completedAt: new Date().toISOString() });
+      440 -        updateRepo(repo.id, { status: 'idle', activeTaskId: null });                                                                                                                                       
+      440 +        syncRepoStatus(repo.id);                                                                                                                                                                           
+      441          publishTaskStatus(failed, 'Validation failed and could not be auto-fixed');
+      442          broker.publish({ type: 'task.failed', taskId, error: 'Validation failed' });
+      443          return;
+      444        }
+      445 -      // Retry validation from start                                                                                                                                                                       
+      446 -      await runValidation(taskId, repo, workDir);                                                                                                                                                          
+      445 +      await runValidation(taskId, repo, workDir, sessionRef);                                                                                                                                              
+      446        return;
+      447      }
+      448    }
+     ...
+      458      throw new Error('Cannot delete an active task — stop it first');
+      459    }
+      460  
+      461 -  // Clean up worktree if it exists                                                                                                                                                                        
+      462 -  if (task.worktreePath) {                                                                                                                                                                                 
+      463 -    try {                                                                                                                                                                                                  
+      464 -      const repo = getRepo(task.repoId);                                                                                                                                                                   
+      465 -      if (repo) removeWorktree(repo.path, task.worktreePath);                                                                                                                                              
+      466 -    } catch (e) {                                                                                                                                                                                          
+      467 -      logger.warn(`Worktree cleanup during delete failed for task ${taskId}`, e);                                                                                                                          
+      461 +  // Clean up worktree if it exists and no other tasks use this session                                                                                                                                    
+      462 +  if (task.worktreePath && task.sessionRef) {                                                                                                                                                              
+      463 +    const siblingTasks = (db.prepare(                                                                                                                                                                      
+      464 +      'SELECT id FROM tasks WHERE session_ref = ? AND id != ?'                                                                                                                                             
+      465 +    ).all(task.sessionRef, taskId) as { id: string }[]);                                                                                                                                                   
+      466 +    if (siblingTasks.length === 0) {                                                                                                                                                                       
+      467 +      try {                                                                                                                                                                                                
+      468 +        const repo = getRepo(task.repoId);                                                                                                                                                                 
+      469 +        if (repo) removeWorktree(repo.path, task.worktreePath);                                                                                                                                            
+      470 +      } catch (e) {                                                                                                                                                                                        
+      471 +        logger.warn(`Worktree cleanup during delete failed for task ${taskId}`, e);                                                                                                                        
+      472 +      }                                                                                                                                                                                                    
+      473 +      db.prepare('UPDATE worktrees SET active = 0 WHERE task_id = ?').run(taskId);                                                                                                                         
+      474 +      db.prepare('DELETE FROM sessions WHERE id = ?').run(task.sessionRef);                                                                                                                                
+      475      }
+      476 -    db.prepare('UPDATE worktrees SET active = 0 WHERE task_id = ?').run(taskId);                                                                                                                           
+      476    }
+      477  
+      478    db.prepare('DELETE FROM messages WHERE task_id = ?').run(taskId);
+      479 -  db.prepare('DELETE FROM sessions WHERE task_id = ?').run(taskId);                                                                                                                                        
+      479    db.prepare('DELETE FROM tasks WHERE id = ?').run(taskId);
+      480  
+      481    broker.publish({ type: 'task.deleted', taskId });
+     ...
+      496    const task = getTask(taskId);
+      497    if (!task) return;
+      498    const updated = updateTask(taskId, { status: 'ready_for_review' });
+      499 -  updateRepo(repo.id, { status: 'ready_for_review' });                                                                                                                                                     
+      499 +  syncRepoStatus(repo.id);                                                                                                                                                                                 
+      500    publishTaskStatus(updated);
+      501    broker.publish({ type: 'task.ready_for_review', task: updated });
+      502  }
+     ...
+      508    if (!repo) throw new Error('Repo not found');
+      509  
+      510    updateTask(taskId, { status: 'working' });
+      511 -  updateRepo(repo.id, { status: 'working' });                                                                                                                                                              
+      511 +  syncRepoStatus(repo.id);                                                                                                                                                                                 
+      512    publishTaskStatus(getTask(taskId)!, 'Merging into main...');
+      513  
+      514    try {
+      515 -    // Ensure work is committed                                                                                                                                                                            
+      515      const workDir = task.worktreePath ?? repo.path;
+      516      commit(workDir, task.title);
+      517  
+      518 -    // Merge branch into main                                                                                                                                                                              
+      518      if (task.branch) {
+      519        try {
+      520          mergeIntoMain(repo.path, task.branch);
+      521          broker.publish({ type: 'git.merge', repoId: repo.id, from: task.branch, into: getDefaultBranch(repo.path) });
+      522        } catch (e: unknown) {
+      523 -        // Merge conflict - ask Claude to fix                                                                                                                                                              
+      523          logger.warn(`Merge conflict during approval of task ${taskId}`, e);
+      524          const errMsg = e instanceof Error ? e.message : String(e);
+      525  
+     ...
+      545        }
+      546      }
+      547  
+      548 -    // Push main                                                                                                                                                                                           
+      548      const cfg = getConfig();
+      549      if (cfg.git.approval.push_main) {
+      550        try {
+     ...
+      553          broker.publish({ type: 'git.push', repoId: repo.id, branch: getDefaultBranch(repo.path) });
+      554        } catch (e) {
+      555          logger.warn(`Push failed for task ${taskId}`, e);
+      556 -        // Non-fatal for now                                                                                                                                                                               
+      556        }
+      557      }
+      558  
+      559 -    // Clean up worktree                                                                                                                                                                                   
+      560 -    if (task.worktreePath && task.branch) {                                                                                                                                                                
+      561 -      try {                                                                                                                                                                                                
+      562 -        removeWorktree(repo.path, task.worktreePath);                                                                                                                                                      
+      563 -        getDb().prepare('UPDATE worktrees SET active = 0 WHERE task_id = ?').run(taskId);                                                                                                                  
+      564 -        broker.publish({ type: 'git.branch_created', repoId: repo.id, branch: `removed:${task.branch}` });                                                                                                 
+      565 -      } catch (e) {                                                                                                                                                                                        
+      566 -        logger.warn(`Worktree cleanup failed for task ${taskId}`, e);                                                                                                                                      
+      559 +    // Clean up worktree only if no other tasks use this session                                                                                                                                           
+      560 +    if (task.worktreePath && task.branch && task.sessionRef) {                                                                                                                                             
+      561 +      const db = getDb();                                                                                                                                                                                  
+      562 +      const queuedInSession = (db.prepare(                                                                                                                                                                 
+      563 +        "SELECT id FROM tasks WHERE session_ref = ? AND id != ? AND status IN ('queued', 'working', 'validating', 'paused')"                                                                               
+      564 +      ).all(task.sessionRef, taskId) as { id: string }[]);                                                                                                                                                 
+      565 +                                                                                                                                                                                                           
+      566 +      if (queuedInSession.length === 0) {                                                                                                                                                                  
+      567 +        try {                                                                                                                                                                                              
+      568 +          removeWorktree(repo.path, task.worktreePath);                                                                                                                                                    
+      569 +          getDb().prepare('UPDATE worktrees SET active = 0 WHERE task_id = ?').run(taskId);                                                                                                                
+      570 +          broker.publish({ type: 'git.branch_created', repoId: repo.id, branch: `removed:${task.branch}` });                                                                                               
+      571 +        } catch (e) {                                                                                                                                                                                      
+      572 +          logger.warn(`Worktree cleanup failed for task ${taskId}`, e);                                                                                                                                    
+      573 +        }                                                                                                                                                                                                  
+      574        }
+      575      }
+      576  
+      577      const done = updateTask(taskId, { status: 'done', completedAt: new Date().toISOString() });
+      578 -    updateRepo(repo.id, { status: 'idle', activeTaskId: null });                                                                                                                                           
+      578 +    syncRepoStatus(repo.id);                                                                                                                                                                               
+      579      publishTaskStatus(done);
+      580      broker.publish({ type: 'task.done', task: done });
+      581  
+     ...
+      577      const msg = err instanceof Error ? err.message : String(err);
+      578      logger.error(`Approval failed for task ${taskId}`, err);
+      579      const failed = updateTask(taskId, { status: 'failed', completedAt: new Date().toISOString() });
+      580 -    updateRepo(repo.id, { status: 'idle', activeTaskId: null });                                                                                                                                           
+      580 +    syncRepoStatus(repo.id);                                                                                                                                                                               
+      581      publishTaskStatus(failed, msg);
+      582      broker.publish({ type: 'task.failed', taskId, error: msg });
+      583    }
+  ⎿  You've hit your limit · resets 3:10am (America/Los_Angeles)
+                                                                     
+✻ Worked for 3m 45s                                                                                                                                                                                                          
+                                                                                                                                                                                

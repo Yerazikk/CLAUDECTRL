@@ -9,7 +9,8 @@ export type TaskStatus =
   | 'ready_for_review'
   | 'done'
   | 'failed'
-  | 'stopped';
+  | 'stopped'
+  | 'paused';
 
 export type SessionStatus = 'active' | 'idle' | 'stopped';
 
@@ -35,8 +36,10 @@ export interface Task {
   branch: string | null;
   worktreePath: string | null;
   sessionId: string | null;
+  sessionRef: string | null;
   lastMessage: string | null;
   lastResult: string | null;
+  archived: boolean;
   createdAt: string;
   updatedAt: string;
   startedAt: string | null;
@@ -51,6 +54,7 @@ export interface Session {
   status: SessionStatus;
   title: string | null;
   worktreePath: string | null;
+  branch: string | null;
   createdAt: string;
   updatedAt: string;
 }

@@ -12,8 +12,13 @@ import {
 } from '../managers/repos';
 import {
   getRepoTasks,
+  getRepoSessions,
   createTask,
   stopTask,
+  pauseTask,
+  resumeTask,
+  archiveTask,
+  unarchiveTask,
   approveTask,
   submitFeedback,
   getTask,
@@ -48,8 +53,7 @@ export async function reposRoutes(app: FastifyInstance): Promise<void> {
   app.get<{ Params: { id: string } }>('/api/repos/:id/sessions', async (req, reply) => {
     const repo = getRepo(req.params.id);
     if (!repo) return reply.status(404).send({ error: 'Not found' });
-    const db = getDb();
-    return db.prepare('SELECT * FROM sessions WHERE repo_id = ? ORDER BY created_at DESC').all(req.params.id);
+    return getRepoSessions(req.params.id);
   });
 
   // Get repo messages for a task
@@ -63,15 +67,15 @@ export async function reposRoutes(app: FastifyInstance): Promise<void> {
     return getActivePreviewForRepo(req.params.id);
   });
 
-  // Submit task command
-  app.post<{ Params: { id: string }; Body: { message: string } }>(
+  // Submit task command (optionally within an existing session)
+  app.post<{ Params: { id: string }; Body: { message: string; sessionRef?: string } }>(
     '/api/repos/:id/tasks',
     async (req, reply) => {
-      const { message } = req.body;
+      const { message, sessionRef } = req.body;
       if (!message?.trim()) return reply.status(400).send({ error: 'message required' });
       const repo = getRepo(req.params.id);
       if (!repo) return reply.status(404).send({ error: 'Not found' });
-      const task = await createTask(req.params.id, message.trim());
+      const task = await createTask(req.params.id, message.trim(), sessionRef);
       return task;
     }
   );
@@ -94,6 +98,46 @@ export async function reposRoutes(app: FastifyInstance): Promise<void> {
     '/api/repos/:id/tasks/:taskId/stop',
     async (req, reply) => {
       await stopTask(req.params.taskId);
+      return { ok: true };
+    }
+  );
+
+  // Pause a task
+  app.post<{ Params: { id: string; taskId: string } }>(
+    '/api/repos/:id/tasks/:taskId/pause',
+    async (req, reply) => {
+      await pauseTask(req.params.taskId);
+      return { ok: true };
+    }
+  );
+
+  // Resume a paused/stopped task
+  app.post<{ Params: { id: string; taskId: string } }>(
+    '/api/repos/:id/tasks/:taskId/resume',
+    async (req, reply) => {
+      try {
+        await resumeTask(req.params.taskId);
+        return { ok: true };
+      } catch (e: unknown) {
+        return reply.status(400).send({ error: e instanceof Error ? e.message : String(e) });
+      }
+    }
+  );
+
+  // Archive a task
+  app.post<{ Params: { id: string; taskId: string } }>(
+    '/api/repos/:id/tasks/:taskId/archive',
+    async (req, reply) => {
+      await archiveTask(req.params.taskId);
+      return { ok: true };
+    }
+  );
+
+  // Unarchive a task
+  app.post<{ Params: { id: string; taskId: string } }>(
+    '/api/repos/:id/tasks/:taskId/unarchive',
+    async (req, reply) => {
+      await unarchiveTask(req.params.taskId);
       return { ok: true };
     }
   );

@@ -56,11 +56,22 @@ function applyEvent(state: AppState, event: ServerEvent): AppState {
 
     case 'task.failed':
     case 'task.stopped':
+    case 'task.paused':
       return {
         ...state,
         tasks: state.tasks.map((t) =>
           t.id === event.taskId
-            ? { ...t, status: event.type === 'task.failed' ? 'failed' : 'stopped' }
+            ? { ...t, status: event.type === 'task.failed' ? 'failed' : event.type === 'task.paused' ? 'paused' : 'stopped' }
+            : t
+        ),
+      };
+
+    case 'task.archived':
+      return {
+        ...state,
+        tasks: state.tasks.map((t) =>
+          t.id === event.taskId
+            ? { ...t, archived: event.archived }
             : t
         ),
       };
@@ -105,7 +116,6 @@ function applyEvent(state: AppState, event: ServerEvent): AppState {
 const WS_URL = (() => {
   const { protocol, hostname, port } = window.location;
   const wsProto = protocol === 'https:' ? 'wss:' : 'ws:';
-  // In dev mode (port 5173), connect to server port 4173
   const serverPort = port === '5173' ? '4173' : port;
   return `${wsProto}//${hostname}:${serverPort}/ws`;
 })();
@@ -137,7 +147,7 @@ export function useStore() {
         if (event.type === 'task.output') {
           const lines = taskOutputs.current.get(event.taskId) ?? [];
           lines.push(event.line);
-          if (lines.length > 500) lines.splice(0, lines.length - 500); // keep last 500
+          if (lines.length > 500) lines.splice(0, lines.length - 500);
           taskOutputs.current.set(event.taskId, lines);
           setTaskOutputMap(new Map(taskOutputs.current));
           return;

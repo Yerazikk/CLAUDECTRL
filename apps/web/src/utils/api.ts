@@ -32,11 +32,20 @@ export const api = {
     clone: (owner: string, repo: string) => api.post('/api/repos/clone', { owner, repo }),
     remove: (id: string) => api.delete(`/api/repos/${id}`),
     fetch: (id: string) => api.post(`/api/repos/${id}/fetch`),
-    submitTask: (id: string, message: string) => api.post(`/api/repos/${id}/tasks`, { message }),
+    submitTask: (id: string, message: string, sessionRef?: string) =>
+      api.post(`/api/repos/${id}/tasks`, { message, sessionRef }),
     feedback: (id: string, taskId: string, message: string) =>
       api.post(`/api/repos/${id}/tasks/${taskId}/feedback`, { message }),
     stopTask: (id: string, taskId: string) =>
       api.post(`/api/repos/${id}/tasks/${taskId}/stop`),
+    pauseTask: (id: string, taskId: string) =>
+      api.post(`/api/repos/${id}/tasks/${taskId}/pause`),
+    resumeTask: (id: string, taskId: string) =>
+      api.post(`/api/repos/${id}/tasks/${taskId}/resume`),
+    archiveTask: (id: string, taskId: string) =>
+      api.post(`/api/repos/${id}/tasks/${taskId}/archive`),
+    unarchiveTask: (id: string, taskId: string) =>
+      api.post(`/api/repos/${id}/tasks/${taskId}/unarchive`),
     approveTask: (id: string, taskId: string) =>
       api.post(`/api/repos/${id}/tasks/${taskId}/approve`),
     deleteTask: (id: string, taskId: string) =>
@@ -52,6 +61,9 @@ export const api = {
   settings: {
     get: () => api.get('/api/settings'),
     health: () => api.get('/api/health'),
+    getPrompt: () => api.get<{ content: string; path: string }>('/api/settings/prompt'),
+    savePrompt: (content: string) => api.post('/api/settings/prompt', { content }),
+    refreshUsage: () => api.post('/api/usage/refresh'),
   },
 
   server: {

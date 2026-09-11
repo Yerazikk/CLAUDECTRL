@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { broker } from '../services/events';
 import { getAllRepos } from '../managers/repos';
-import { getActiveTasks } from '../managers/tasks';
+import { getRecentTasks } from '../managers/tasks';
 import { getLatestUsage } from '../managers/usage';
 import { getAllActivePreviews } from '../managers/preview';
 import { getDb } from '../db';
@@ -12,7 +12,7 @@ export async function wsRoutes(app: FastifyInstance): Promise<void> {
     // Send initial state snapshot
     const snapshot: StateSnapshot = {
       repos: getAllRepos(),
-      tasks: getActiveTasks(),
+      tasks: getRecentTasks(),
       sessions: getDb().prepare("SELECT * FROM sessions WHERE status = 'active'").all() as never[],
       usage: getLatestUsage(),
       previews: getAllActivePreviews(),

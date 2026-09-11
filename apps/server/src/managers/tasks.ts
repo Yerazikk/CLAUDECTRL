@@ -7,6 +7,7 @@ import { broker } from '../services/events';
 import { getConfig, loadRepoConfig } from '../utils/config';
 import { logger } from '../utils/logger';
 import { runClaude } from './claude';
+import { refreshUsage } from './usage';
 import {
   getCurrentBranch,
   getDefaultBranch,
@@ -18,20 +19,20 @@ import {
   pushMain,
   commit,
 } from './git';
-import type { Task, Repository } from '@claudectrl/shared';
+import type { Task, Repository, Session } from '@claudectrl/shared';
 
 // In-memory abort controllers for running tasks
 const activeAbortControllers = new Map<string, AbortController>();
 
-// Per-repo task execution lock: prevents concurrent same-checkout runs
-// key = repoId, value = promise of the current running task
-const repoLocks = new Map<string, Promise<void>>();
+// Per-session task execution lock: serializes tasks within the same session
+// key = sessionRef (our session ID), value = promise chain
+const sessionLocks = new Map<string, Promise<void>>();
 
-async function withRepoLock(repoId: string, fn: () => Promise<void>): Promise<void> {
-  const existing = repoLocks.get(repoId) ?? Promise.resolve();
+function withSessionLock(sessionRef: string, fn: () => Promise<void>): Promise<void> {
+  const existing = sessionLocks.get(sessionRef) ?? Promise.resolve();
   const next = existing.then(() => fn()).catch(() => {});
-  repoLocks.set(repoId, next);
-  await next;
+  sessionLocks.set(sessionRef, next);
+  return next;
 }
 
 function dbRowToTask(row: Record<string, unknown>): Task {
@@ -43,8 +44,10 @@ function dbRowToTask(row: Record<string, unknown>): Task {
     branch: row.branch as string | null,
     worktreePath: row.worktree_path as string | null,
     sessionId: row.session_id as string | null,
+    sessionRef: row.session_ref as string | null,
     lastMessage: row.last_message as string | null,
     lastResult: row.last_result as string | null,
+    archived: Boolean(row.archived),
     createdAt: row.created_at as string,
     updatedAt: row.updated_at as string,
     startedAt: row.started_at as string | null,
@@ -65,6 +68,21 @@ function dbRowToRepo(row: Record<string, unknown>): Repository {
     activeTaskId: row.active_task_id as string | null,
     previewUrl: row.preview_url as string | null,
     lastActivityAt: row.last_activity_at as string | null,
+  };
+}
+
+function dbRowToSession(row: Record<string, unknown>): Session {
+  return {
+    id: row.id as string,
+    repoId: row.repo_id as string,
+    taskId: row.task_id as string | null,
+    claudeSessionId: row.claude_session_id as string | null,
+    status: row.status as Session['status'],
+    title: row.title as string | null,
+    worktreePath: row.worktree_path as string | null,
+    branch: row.branch as string | null,
+    createdAt: row.created_at as string,
+    updatedAt: row.updated_at as string,
   };
 }
 
@@ -95,6 +113,23 @@ export function getActiveTasks(): Task[] {
   return (db.prepare("SELECT * FROM tasks WHERE status IN ('queued','working','validating') ORDER BY created_at ASC").all() as Record<string, unknown>[]).map(dbRowToTask);
 }
 
+/** All non-archived tasks (for initial WS snapshot) */
+export function getRecentTasks(): Task[] {
+  const db = getDb();
+  return (db.prepare("SELECT * FROM tasks WHERE archived = 0 ORDER BY created_at DESC LIMIT 100").all() as Record<string, unknown>[]).map(dbRowToTask);
+}
+
+export function getSession(sessionId: string): Session | null {
+  const db = getDb();
+  const row = db.prepare('SELECT * FROM sessions WHERE id = ?').get(sessionId) as Record<string, unknown> | undefined;
+  return row ? dbRowToSession(row) : null;
+}
+
+export function getRepoSessions(repoId: string): Session[] {
+  const db = getDb();
+  return (db.prepare('SELECT * FROM sessions WHERE repo_id = ? ORDER BY created_at DESC').all(repoId) as Record<string, unknown>[]).map(dbRowToSession);
+}
+
 function updateTask(taskId: string, updates: Partial<Task>): Task {
   const db = getDb();
   const fields: string[] = [];
@@ -104,10 +139,12 @@ function updateTask(taskId: string, updates: Partial<Task>): Task {
   if (updates.branch !== undefined) { fields.push('branch = ?'); values.push(updates.branch); }
   if (updates.worktreePath !== undefined) { fields.push('worktree_path = ?'); values.push(updates.worktreePath); }
   if (updates.sessionId !== undefined) { fields.push('session_id = ?'); values.push(updates.sessionId); }
+  if (updates.sessionRef !== undefined) { fields.push('session_ref = ?'); values.push(updates.sessionRef); }
   if (updates.lastMessage !== undefined) { fields.push('last_message = ?'); values.push(updates.lastMessage); }
   if (updates.lastResult !== undefined) { fields.push('last_result = ?'); values.push(updates.lastResult); }
   if (updates.startedAt !== undefined) { fields.push('started_at = ?'); values.push(updates.startedAt); }
   if (updates.completedAt !== undefined) { fields.push('completed_at = ?'); values.push(updates.completedAt); }
+  if (updates.archived !== undefined) { fields.push('archived = ?'); values.push(updates.archived ? 1 : 0); }
   fields.push("updated_at = datetime('now')");
 
   db.prepare(`UPDATE tasks SET ${fields.join(', ')} WHERE id = ?`).run(...values, taskId);
@@ -127,10 +164,43 @@ function updateRepo(repoId: string, updates: Partial<Repository>): void {
   db.prepare(`UPDATE repositories SET ${fields.join(', ')} WHERE id = ?`).run(...values, repoId);
 }
 
+function updateSession(sessionId: string, updates: Partial<Session>): void {
+  const db = getDb();
+  const fields: string[] = [];
+  const values: unknown[] = [];
+  if (updates.taskId !== undefined) { fields.push('task_id = ?'); values.push(updates.taskId); }
+  if (updates.claudeSessionId !== undefined) { fields.push('claude_session_id = ?'); values.push(updates.claudeSessionId); }
+  if (updates.status !== undefined) { fields.push('status = ?'); values.push(updates.status); }
+  if (updates.title !== undefined) { fields.push('title = ?'); values.push(updates.title); }
+  if (updates.worktreePath !== undefined) { fields.push('worktree_path = ?'); values.push(updates.worktreePath); }
+  if (updates.branch !== undefined) { fields.push('branch = ?'); values.push(updates.branch); }
+  fields.push("updated_at = datetime('now')");
+  db.prepare(`UPDATE sessions SET ${fields.join(', ')} WHERE id = ?`).run(...values, sessionId);
+}
+
+/** Derive repo status from its active tasks (no more hardcoded activeTaskId) */
+export function deriveRepoStatus(repoId: string): Repository['status'] {
+  const db = getDb();
+  const statuses = (db.prepare(
+    "SELECT DISTINCT status FROM tasks WHERE repo_id = ? AND status IN ('working','validating','queued','ready_for_review','paused')"
+  ).all(repoId) as { status: string }[]).map(r => r.status);
+
+  if (statuses.includes('working') || statuses.includes('validating')) return 'working';
+  if (statuses.includes('queued')) return 'working';
+  if (statuses.includes('ready_for_review')) return 'ready_for_review';
+  return 'idle';
+}
+
+function syncRepoStatus(repoId: string): void {
+  const status = deriveRepoStatus(repoId);
+  updateRepo(repoId, { status });
+  const repo = getRepo(repoId);
+  if (repo) broker.publish({ type: 'repo.updated', repo });
+}
+
 function publishTaskStatus(task: Task, message?: string): void {
   broker.publish({ type: 'task.status', taskId: task.id, status: task.status, message });
-  const repo = getRepo(task.repoId);
-  if (repo) broker.publish({ type: 'repo.updated', repo });
+  syncRepoStatus(task.repoId);
 }
 
 function loadPrompt(promptPath: string): string {
@@ -176,14 +246,19 @@ export function recoverInterruptedTasks(): void {
     db.prepare(
       "UPDATE tasks SET status = 'failed', last_result = ?, completed_at = datetime('now'), updated_at = datetime('now') WHERE id = ?"
     ).run('Server restarted — task was interrupted', taskId);
-    db.prepare(
-      "UPDATE repositories SET status = 'idle', active_task_id = NULL, updated_at = datetime('now') WHERE id = ?"
-    ).run(repoId);
+    // Sync repo status via derive instead of hardcoding idle
+    const status = deriveRepoStatus(repoId);
+    updateRepo(repoId, { status, activeTaskId: null });
     logger.info(`Marked interrupted task ${taskId} as failed`);
   }
 }
 
-export async function createTask(repoId: string, userMessage: string): Promise<Task> {
+/**
+ * Create a task, optionally within an existing session (for queuing).
+ * If sessionRef is provided, the task joins that session's queue.
+ * Otherwise, a new session + worktree is created.
+ */
+export async function createTask(repoId: string, userMessage: string, sessionRef?: string): Promise<Task> {
   const db = getDb();
   const repo = getRepo(repoId);
   if (!repo) throw new Error(`Repository ${repoId} not found`);
@@ -192,9 +267,9 @@ export async function createTask(repoId: string, userMessage: string): Promise<T
   const title = userMessage.slice(0, 80);
 
   db.prepare(`
-    INSERT INTO tasks (id, repo_id, title, status, last_message)
-    VALUES (?, ?, ?, 'queued', ?)
-  `).run(taskId, repoId, title, userMessage);
+    INSERT INTO tasks (id, repo_id, title, status, last_message, session_ref)
+    VALUES (?, ?, ?, 'queued', ?, ?)
+  `).run(taskId, repoId, title, userMessage, sessionRef ?? null);
 
   // Save user message
   db.prepare(`
@@ -205,10 +280,17 @@ export async function createTask(repoId: string, userMessage: string): Promise<T
   const task = getTask(taskId)!;
   broker.publish({ type: 'task.created', task });
 
-  // Start task in background, serialized per repo (tasks with worktrees don't block other worktree tasks)
-  withRepoLock(repoId, () => runTask(task, repo, userMessage)).catch((err) => {
-    logger.error(`Task ${taskId} failed unexpectedly`, err);
-  });
+  if (sessionRef) {
+    // Queue within existing session — use session lock to serialize
+    withSessionLock(sessionRef, () => runTask(task, repo, userMessage, false, sessionRef)).catch((err) => {
+      logger.error(`Task ${taskId} failed unexpectedly`, err);
+    });
+  } else {
+    // New independent task — no lock needed, creates its own worktree
+    runTask(task, repo, userMessage).catch((err) => {
+      logger.error(`Task ${taskId} failed unexpectedly`, err);
+    });
+  }
 
   return task;
 }
@@ -244,18 +326,79 @@ export async function stopTask(taskId: string): Promise<void> {
   broker.publish({ type: 'task.stopped', taskId });
 }
 
-async function runTask(task: Task, repo: Repository, userMessage: string, isResume = false): Promise<void> {
+export async function pauseTask(taskId: string): Promise<void> {
+  const controller = activeAbortControllers.get(taskId);
+  if (controller) {
+    controller.abort();
+    activeAbortControllers.delete(taskId);
+  }
+  const task = updateTask(taskId, { status: 'paused' });
+  publishTaskStatus(task);
+  broker.publish({ type: 'task.paused', taskId });
+}
+
+export async function resumeTask(taskId: string): Promise<void> {
+  const task = getTask(taskId);
+  if (!task) throw new Error(`Task ${taskId} not found`);
+  if (!['paused', 'stopped'].includes(task.status)) {
+    throw new Error('Only paused or stopped tasks can be resumed');
+  }
+  if (!task.sessionId) {
+    throw new Error('No Claude session to resume — use retry instead');
+  }
+
+  const repo = getRepo(task.repoId);
+  if (!repo) throw new Error('Repo not found');
+
+  const message = task.lastMessage ?? task.title;
+  const updated = updateTask(taskId, { status: 'working', completedAt: null });
+  publishTaskStatus(updated, 'Resuming...');
+
+  runTask(updated, repo, message, true).catch((err) => {
+    logger.error(`Task ${taskId} resume failed`, err);
+  });
+}
+
+export async function archiveTask(taskId: string): Promise<void> {
+  const task = getTask(taskId);
+  if (!task) throw new Error(`Task ${taskId} not found`);
+  updateTask(taskId, { archived: true });
+  broker.publish({ type: 'task.archived', taskId, archived: true });
+}
+
+export async function unarchiveTask(taskId: string): Promise<void> {
+  const task = getTask(taskId);
+  if (!task) throw new Error(`Task ${taskId} not found`);
+  updateTask(taskId, { archived: false });
+  broker.publish({ type: 'task.archived', taskId, archived: false });
+}
+
+async function runTask(task: Task, repo: Repository, userMessage: string, isResume = false, sessionRef?: string): Promise<void> {
   const db = getDb();
   const controller = new AbortController();
   activeAbortControllers.set(task.id, controller);
 
   try {
-    // Determine working directory (use worktree if exists, else create one for new tasks)
     let workDir = repo.path;
     let branch = task.branch;
+    let claudeSessionIdToResume: string | undefined;
 
-    if (!isResume) {
-      // Create branch + worktree for new tasks
+    if (isResume) {
+      // Resume: reuse existing worktree + session
+      workDir = task.worktreePath ?? repo.path;
+      branch = task.branch;
+      claudeSessionIdToResume = task.sessionId ?? undefined;
+    } else if (sessionRef) {
+      // Queued task in existing session: reuse session's worktree + Claude session
+      const session = getSession(sessionRef);
+      if (session) {
+        workDir = session.worktreePath ?? repo.path;
+        branch = session.branch;
+        claudeSessionIdToResume = session.claudeSessionId ?? undefined;
+        updateTask(task.id, { worktreePath: workDir !== repo.path ? workDir : null, branch, sessionRef });
+      }
+    } else {
+      // New task: create branch + worktree + session
       const branchType = detectBranchType(userMessage);
       const slug = userMessage.slice(0, 20).toLowerCase().replace(/[^a-z0-9 ]/g, '').trim().replace(/\s+/g, '-');
       branch = getBranchName(branchType, slug);
@@ -266,7 +409,6 @@ async function runTask(task: Task, repo: Repository, userMessage: string, isResu
       fs.mkdirSync(path.dirname(worktreePath), { recursive: true });
 
       try {
-        // Clean up stale worktree from a previous crashed run if it already exists
         if (fs.existsSync(worktreePath)) {
           logger.warn(`Stale worktree found at ${worktreePath}, cleaning up before recreating`);
           removeWorktree(repo.path, worktreePath);
@@ -274,7 +416,6 @@ async function runTask(task: Task, repo: Repository, userMessage: string, isResu
         createWorktree(repo.path, branch, worktreePath);
         workDir = worktreePath;
 
-        // Remove any stale DB row for this path before inserting
         db.prepare('DELETE FROM worktrees WHERE path = ?').run(worktreePath);
         db.prepare(`
           INSERT INTO worktrees (id, repo_id, task_id, path, branch, active)
@@ -287,9 +428,16 @@ async function runTask(task: Task, repo: Repository, userMessage: string, isResu
         workDir = repo.path;
         branch = null;
       }
-    } else {
-      workDir = task.worktreePath ?? repo.path;
-      branch = task.branch;
+
+      // Create the session record
+      const sessId = newId();
+      db.prepare(`
+        INSERT INTO sessions (id, repo_id, task_id, claude_session_id, status, title, worktree_path, branch)
+        VALUES (?, ?, ?, NULL, 'active', ?, ?, ?)
+      `).run(sessId, repo.id, task.id, task.title, workDir !== repo.path ? workDir : null, branch);
+      updateTask(task.id, { sessionRef: sessId });
+      // Update local reference for this run
+      sessionRef = sessId;
     }
 
     const updatedTask = updateTask(task.id, {
@@ -299,12 +447,7 @@ async function runTask(task: Task, repo: Repository, userMessage: string, isResu
       startedAt: task.startedAt ?? new Date().toISOString(),
     });
 
-    updateRepo(repo.id, {
-      status: 'working',
-      activeTaskId: task.id,
-      currentBranch: branch ?? getCurrentBranch(repo.path),
-    });
-
+    syncRepoStatus(repo.id);
     publishTaskStatus(updatedTask, 'Starting Claude...');
     broker.publish({ type: 'task.started', task: updatedTask });
 
@@ -314,24 +457,27 @@ async function runTask(task: Task, repo: Repository, userMessage: string, isResu
       taskId: task.id,
       workDir,
       prompt,
-      sessionId: isResume ? task.sessionId ?? undefined : undefined,
+      sessionId: claudeSessionIdToResume,
       onStatusUpdate: (status) => {
         broker.publish({ type: 'task.status', taskId: task.id, status: 'working', message: status });
       },
-      onSessionId: (sessionId) => {
-        updateTask(task.id, { sessionId });
-        db.prepare(`
-          INSERT OR IGNORE INTO sessions (id, repo_id, task_id, claude_session_id, status, title)
-          VALUES (?, ?, ?, ?, 'active', ?)
-        `).run(newId(), repo.id, task.id, sessionId, task.title);
+      onSessionId: (claudeSessId) => {
+        updateTask(task.id, { sessionId: claudeSessId });
+        // Update the session record with Claude's session ID
+        if (sessionRef) {
+          updateSession(sessionRef, { claudeSessionId: claudeSessId, taskId: task.id });
+        }
       },
       signal: controller.signal,
     });
 
-    if (controller.signal.aborted) return; // Was stopped
+    if (controller.signal.aborted) return; // Was stopped/paused
 
     if (result.sessionId) {
       updateTask(task.id, { sessionId: result.sessionId });
+      if (sessionRef) {
+        updateSession(sessionRef, { claudeSessionId: result.sessionId });
+      }
     }
 
     // Save assistant response
@@ -346,25 +492,26 @@ async function runTask(task: Task, repo: Repository, userMessage: string, isResu
 
     if (!result.success) {
       const failed = updateTask(task.id, { status: 'failed', completedAt: new Date().toISOString() });
-      updateRepo(repo.id, { status: 'idle', activeTaskId: null });
+      syncRepoStatus(repo.id);
       publishTaskStatus(failed, result.error);
       broker.publish({ type: 'task.failed', taskId: task.id, error: result.error ?? 'Unknown error' });
       return;
     }
 
     // Validate
-    await runValidation(task.id, repo, workDir);
+    await runValidation(task.id, repo, workDir, sessionRef);
 
   } catch (err: unknown) {
     if (controller.signal.aborted) return;
     const msg = err instanceof Error ? err.message : String(err);
     logger.error(`Task ${task.id} error`, err);
     const failed = updateTask(task.id, { status: 'failed', completedAt: new Date().toISOString() });
-    updateRepo(task.repoId, { status: 'idle', activeTaskId: null });
+    syncRepoStatus(task.repoId);
     publishTaskStatus(failed, msg);
     broker.publish({ type: 'task.failed', taskId: task.id, error: msg });
   } finally {
     activeAbortControllers.delete(task.id);
+    refreshUsage().catch(() => {});
   }
 }
 
@@ -375,7 +522,7 @@ function detectBranchType(message: string): 'feature' | 'fix' | 'refactor' {
   return 'feature';
 }
 
-async function runValidation(taskId: string, repo: Repository, workDir: string): Promise<void> {
+async function runValidation(taskId: string, repo: Repository, workDir: string, sessionRef?: string): Promise<void> {
   const db = getDb();
   const cfg = getConfig();
   const repoCfg = loadRepoConfig(repo.path);
@@ -384,7 +531,6 @@ async function runValidation(taskId: string, repo: Repository, workDir: string):
   const validationCmds = [commands.lint, commands.test, commands.build].filter(Boolean) as string[];
 
   if (validationCmds.length === 0) {
-    // Auto-detect
     if (fs.existsSync(path.join(workDir, 'package.json'))) {
       try {
         const pkgJson = JSON.parse(fs.readFileSync(path.join(workDir, 'package.json'), 'utf8'));
@@ -396,7 +542,6 @@ async function runValidation(taskId: string, repo: Repository, workDir: string):
   }
 
   if (validationCmds.length === 0) {
-    // No validation commands, go directly to review
     await markReadyForReview(taskId, repo);
     return;
   }
@@ -414,7 +559,6 @@ async function runValidation(taskId: string, repo: Repository, workDir: string):
       const errMsg = e instanceof Error ? e.message : String(e);
       logger.warn(`Validation failed for task ${taskId}: ${cmd}`, errMsg);
 
-      // Ask Claude to fix
       const currentTask = getTask(taskId);
       if (!currentTask) return;
 
@@ -427,20 +571,22 @@ async function runValidation(taskId: string, repo: Repository, workDir: string):
         onStatusUpdate: (status) => {
           broker.publish({ type: 'task.status', taskId, status: 'working', message: status });
         },
-        onSessionId: (sessionId) => {
-          updateTask(taskId, { sessionId });
+        onSessionId: (claudeSessId) => {
+          updateTask(taskId, { sessionId: claudeSessId });
+          if (sessionRef) {
+            updateSession(sessionRef, { claudeSessionId: claudeSessId });
+          }
         },
       });
 
       if (!result.success) {
         const failed = updateTask(taskId, { status: 'failed', completedAt: new Date().toISOString() });
-        updateRepo(repo.id, { status: 'idle', activeTaskId: null });
+        syncRepoStatus(repo.id);
         publishTaskStatus(failed, 'Validation failed and could not be auto-fixed');
         broker.publish({ type: 'task.failed', taskId, error: 'Validation failed' });
         return;
       }
-      // Retry validation from start
-      await runValidation(taskId, repo, workDir);
+      await runValidation(taskId, repo, workDir, sessionRef);
       return;
     }
   }
@@ -458,19 +604,24 @@ export async function deleteTask(taskId: string): Promise<void> {
     throw new Error('Cannot delete an active task — stop it first');
   }
 
-  // Clean up worktree if it exists
-  if (task.worktreePath) {
-    try {
-      const repo = getRepo(task.repoId);
-      if (repo) removeWorktree(repo.path, task.worktreePath);
-    } catch (e) {
-      logger.warn(`Worktree cleanup during delete failed for task ${taskId}`, e);
+  // Clean up worktree if it exists and no other tasks use this session
+  if (task.worktreePath && task.sessionRef) {
+    const siblingTasks = (db.prepare(
+      'SELECT id FROM tasks WHERE session_ref = ? AND id != ?'
+    ).all(task.sessionRef, taskId) as { id: string }[]);
+    if (siblingTasks.length === 0) {
+      try {
+        const repo = getRepo(task.repoId);
+        if (repo) removeWorktree(repo.path, task.worktreePath);
+      } catch (e) {
+        logger.warn(`Worktree cleanup during delete failed for task ${taskId}`, e);
+      }
+      db.prepare('UPDATE worktrees SET active = 0 WHERE task_id = ?').run(taskId);
+      db.prepare('DELETE FROM sessions WHERE id = ?').run(task.sessionRef);
     }
-    db.prepare('UPDATE worktrees SET active = 0 WHERE task_id = ?').run(taskId);
   }
 
   db.prepare('DELETE FROM messages WHERE task_id = ?').run(taskId);
-  db.prepare('DELETE FROM sessions WHERE task_id = ?').run(taskId);
   db.prepare('DELETE FROM tasks WHERE id = ?').run(taskId);
 
   broker.publish({ type: 'task.deleted', taskId });
@@ -496,7 +647,7 @@ async function markReadyForReview(taskId: string, repo: Repository): Promise<voi
   const task = getTask(taskId);
   if (!task) return;
   const updated = updateTask(taskId, { status: 'ready_for_review' });
-  updateRepo(repo.id, { status: 'ready_for_review' });
+  syncRepoStatus(repo.id);
   publishTaskStatus(updated);
   broker.publish({ type: 'task.ready_for_review', task: updated });
 }
@@ -508,21 +659,18 @@ export async function approveTask(taskId: string): Promise<void> {
   if (!repo) throw new Error('Repo not found');
 
   updateTask(taskId, { status: 'working' });
-  updateRepo(repo.id, { status: 'working' });
+  syncRepoStatus(repo.id);
   publishTaskStatus(getTask(taskId)!, 'Merging into main...');
 
   try {
-    // Ensure work is committed
     const workDir = task.worktreePath ?? repo.path;
     commit(workDir, task.title);
 
-    // Merge branch into main
     if (task.branch) {
       try {
         mergeIntoMain(repo.path, task.branch);
         broker.publish({ type: 'git.merge', repoId: repo.id, from: task.branch, into: getDefaultBranch(repo.path) });
       } catch (e: unknown) {
-        // Merge conflict - ask Claude to fix
         logger.warn(`Merge conflict during approval of task ${taskId}`, e);
         const errMsg = e instanceof Error ? e.message : String(e);
 
@@ -545,7 +693,6 @@ export async function approveTask(taskId: string): Promise<void> {
       }
     }
 
-    // Push main
     const cfg = getConfig();
     if (cfg.git.approval.push_main) {
       try {
@@ -553,23 +700,29 @@ export async function approveTask(taskId: string): Promise<void> {
         broker.publish({ type: 'git.push', repoId: repo.id, branch: getDefaultBranch(repo.path) });
       } catch (e) {
         logger.warn(`Push failed for task ${taskId}`, e);
-        // Non-fatal for now
       }
     }
 
-    // Clean up worktree
-    if (task.worktreePath && task.branch) {
-      try {
-        removeWorktree(repo.path, task.worktreePath);
-        getDb().prepare('UPDATE worktrees SET active = 0 WHERE task_id = ?').run(taskId);
-        broker.publish({ type: 'git.branch_created', repoId: repo.id, branch: `removed:${task.branch}` });
-      } catch (e) {
-        logger.warn(`Worktree cleanup failed for task ${taskId}`, e);
+    // Clean up worktree only if no other tasks use this session
+    if (task.worktreePath && task.branch && task.sessionRef) {
+      const db = getDb();
+      const queuedInSession = (db.prepare(
+        "SELECT id FROM tasks WHERE session_ref = ? AND id != ? AND status IN ('queued', 'working', 'validating', 'paused')"
+      ).all(task.sessionRef, taskId) as { id: string }[]);
+
+      if (queuedInSession.length === 0) {
+        try {
+          removeWorktree(repo.path, task.worktreePath);
+          getDb().prepare('UPDATE worktrees SET active = 0 WHERE task_id = ?').run(taskId);
+          broker.publish({ type: 'git.branch_created', repoId: repo.id, branch: `removed:${task.branch}` });
+        } catch (e) {
+          logger.warn(`Worktree cleanup failed for task ${taskId}`, e);
+        }
       }
     }
 
     const done = updateTask(taskId, { status: 'done', completedAt: new Date().toISOString() });
-    updateRepo(repo.id, { status: 'idle', activeTaskId: null });
+    syncRepoStatus(repo.id);
     publishTaskStatus(done);
     broker.publish({ type: 'task.done', task: done });
 
@@ -577,7 +730,7 @@ export async function approveTask(taskId: string): Promise<void> {
     const msg = err instanceof Error ? err.message : String(err);
     logger.error(`Approval failed for task ${taskId}`, err);
     const failed = updateTask(taskId, { status: 'failed', completedAt: new Date().toISOString() });
-    updateRepo(repo.id, { status: 'idle', activeTaskId: null });
+    syncRepoStatus(repo.id);
     publishTaskStatus(failed, msg);
     broker.publish({ type: 'task.failed', taskId, error: msg });
   }

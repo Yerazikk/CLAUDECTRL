@@ -3,7 +3,7 @@ server:
   port: 4173
 
 repos:
-  directory: "C:/Users/yeraz/Documents/GitHub"  # Set to your GitHub directory, e.g. C:/Users/me/GitHub
+  directory: "C:/Users/yeraz/DocumentsGitHub"  # Set to your GitHub directory, e.g. C:/Users/me/GitHub
 
 agent:
   provider: claude-code

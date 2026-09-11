@@ -8,6 +8,7 @@ const colorMap: Record<string, string> = {
   done: '#38B2AC',
   failed: '#E05252',
   stopped: '#A0AEC0',
+  paused: '#D4A017',
   idle: '#A0AEC0',
   not_cloned: '#C8CDD6',
 };

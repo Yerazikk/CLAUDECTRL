@@ -12,7 +12,7 @@ export function runMigrations(db: Database.Database): void {
     );
   `);
 
-  const migrations: Array<{ name: string; sql: string }> = [
+  const migrations: Array<{ name: string; sql: string; }> = [
     {
       name: '001_initial',
       sql: `
@@ -132,6 +132,15 @@ export function runMigrations(db: Database.Database): void {
         CREATE INDEX IF NOT EXISTS idx_sessions_repo_id ON sessions(repo_id);
         CREATE INDEX IF NOT EXISTS idx_messages_task_id ON messages(task_id);
         CREATE INDEX IF NOT EXISTS idx_git_events_repo_id ON git_events(repo_id);
+      `,
+    },
+    {
+      name: '002_sessions_and_archive',
+      sql: `
+        ALTER TABLE tasks ADD COLUMN archived INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE tasks ADD COLUMN session_ref TEXT REFERENCES sessions(id);
+        ALTER TABLE sessions ADD COLUMN branch TEXT;
+        CREATE INDEX IF NOT EXISTS idx_tasks_session_ref ON tasks(session_ref);
       `,
     },
   ];

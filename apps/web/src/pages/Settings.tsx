@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { api } from '../utils/api';
+import type { UsageSnapshot } from '@claudectrl/shared';
 
 interface HealthCheck {
   status: string;
@@ -9,6 +10,7 @@ interface HealthCheck {
     gh: boolean;
     vercel: boolean | null;
   };
+  usage: UsageSnapshot | null;
 }
 
 interface Props {
@@ -19,17 +21,48 @@ export function Settings({ onBack }: Props) {
   const [health, setHealth] = useState<HealthCheck | null>(null);
   const [loading, setLoading] = useState(true);
   const [shutdownConfirm, setShutdownConfirm] = useState(false);
+  const [usageRefreshing, setUsageRefreshing] = useState(false);
+
+  const [promptContent, setPromptContent] = useState('');
+  const [promptPath, setPromptPath] = useState('');
+  const [promptSaving, setPromptSaving] = useState(false);
+  const [promptSaved, setPromptSaved] = useState(false);
+  const [promptDirty, setPromptDirty] = useState(false);
 
   useEffect(() => {
     api.settings.health()
       .then((h) => setHealth(h as HealthCheck))
       .catch(() => {})
       .finally(() => setLoading(false));
+
+    api.settings.getPrompt()
+      .then((r) => { setPromptContent(r.content); setPromptPath(r.path); })
+      .catch(() => {});
   }, []);
+
+  const handlePromptSave = async () => {
+    setPromptSaving(true);
+    try {
+      await api.settings.savePrompt(promptContent);
+      setPromptSaved(true);
+      setPromptDirty(false);
+      setTimeout(() => setPromptSaved(false), 2000);
+    } catch {}
+    setPromptSaving(false);
+  };
 
   const handleShutdown = async () => {
     if (!shutdownConfirm) { setShutdownConfirm(true); return; }
     await api.server.shutdown().catch(() => {});
+  };
+
+  const handleRefreshUsage = async () => {
+    setUsageRefreshing(true);
+    try {
+      const snapshot = await api.settings.refreshUsage() as UsageSnapshot;
+      setHealth((h) => h ? { ...h, usage: snapshot } : h);
+    } catch {}
+    setUsageRefreshing(false);
   };
 
   return (
@@ -105,6 +138,119 @@ export function Settings({ onBack }: Props) {
             )}
           </>
         )}
+      </div>
+
+      {/* Claude Usage */}
+      <SectionLabel>Claude usage</SectionLabel>
+      <div style={{
+        borderRadius: 'var(--r-xl)',
+        boxShadow: 'var(--shadow-raised)',
+        background: 'var(--c-bg)',
+        padding: '20px 24px',
+        marginBottom: 24,
+      }}>
+        {loading ? (
+          <p style={{ fontSize: 13, color: 'var(--c-muted)' }}>Checking usage...</p>
+        ) : health?.usage ? (
+          <>
+            <pre style={{
+              fontFamily: 'var(--mono)',
+              fontSize: 12,
+              lineHeight: 1.7,
+              color: 'var(--c-fg)',
+              background: 'var(--c-bg)',
+              borderRadius: 'var(--r-lg)',
+              boxShadow: 'var(--shadow-inset)',
+              padding: '12px 14px',
+              margin: '0 0 12px',
+              overflowX: 'auto',
+              whiteSpace: 'pre-wrap',
+              wordBreak: 'break-word',
+            }}>
+              {health.usage.raw || 'No output captured'}
+            </pre>
+            <p style={{ fontSize: 11, color: 'var(--c-subtle)', margin: '0 0 12px', fontFamily: 'var(--mono)' }}>
+              Last updated: {new Date(health.usage.capturedAt).toLocaleString()}
+            </p>
+          </>
+        ) : (
+          <p style={{ fontSize: 13, color: 'var(--c-muted)', marginBottom: 12 }}>
+            No usage data yet — refreshes every 5 min or after each task.
+          </p>
+        )}
+        <button
+          onClick={handleRefreshUsage}
+          disabled={usageRefreshing}
+          style={{
+            fontSize: 13,
+            fontWeight: 600,
+            padding: '9px 20px',
+            borderRadius: 'var(--r-full)',
+            background: 'var(--c-bg)',
+            color: 'var(--c-accent)',
+            boxShadow: usageRefreshing ? 'var(--shadow-inset-sm)' : 'var(--shadow-raised-sm)',
+            transition: 'box-shadow 0.3s ease-out',
+            opacity: usageRefreshing ? 0.6 : 1,
+            cursor: usageRefreshing ? 'default' : 'pointer',
+          }}
+        >
+          {usageRefreshing ? 'Fetching...' : 'Refresh usage'}
+        </button>
+      </div>
+
+      {/* System Prompt */}
+      <SectionLabel>System prompt</SectionLabel>
+      <div style={{
+        borderRadius: 'var(--r-xl)',
+        boxShadow: 'var(--shadow-raised)',
+        background: 'var(--c-bg)',
+        padding: '20px 24px',
+        marginBottom: 24,
+      }}>
+        <p style={{ fontSize: 12, color: 'var(--c-subtle)', marginBottom: 12, fontFamily: 'var(--mono)' }}>
+          {promptPath || 'prompts/task.md'}
+        </p>
+        <textarea
+          value={promptContent}
+          onChange={(e) => { setPromptContent(e.target.value); setPromptDirty(true); setPromptSaved(false); }}
+          rows={14}
+          spellCheck={false}
+          style={{
+            width: '100%',
+            boxSizing: 'border-box',
+            fontFamily: 'var(--mono)',
+            fontSize: 12,
+            lineHeight: 1.6,
+            padding: '12px 14px',
+            borderRadius: 'var(--r-lg)',
+            boxShadow: 'var(--shadow-inset)',
+            background: 'var(--c-bg)',
+            color: 'var(--c-fg)',
+            resize: 'vertical',
+            border: 'none',
+            outline: 'none',
+          }}
+        />
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 12 }}>
+          <button
+            onClick={handlePromptSave}
+            disabled={!promptDirty || promptSaving}
+            style={{
+              fontSize: 13,
+              fontWeight: 600,
+              padding: '9px 20px',
+              borderRadius: 'var(--r-full)',
+              background: 'var(--c-bg)',
+              color: promptSaved ? 'var(--c-success)' : promptDirty ? 'var(--c-accent)' : 'var(--c-subtle)',
+              boxShadow: promptDirty ? 'var(--shadow-raised-sm)' : 'var(--shadow-inset-sm)',
+              transition: 'box-shadow 0.3s ease-out, color 0.2s',
+              opacity: promptSaving ? 0.6 : 1,
+              cursor: promptDirty ? 'pointer' : 'default',
+            }}
+          >
+            {promptSaving ? 'Saving…' : promptSaved ? 'Saved ✓' : 'Save prompt'}
+          </button>
+        </div>
       </div>
 
       {/* Remote access */}
