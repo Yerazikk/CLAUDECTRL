@@ -240,21 +240,9 @@ function HealthRow({ label, ok, last }: { label: string; ok: boolean; last?: boo
       <div style={{ display: 'flex', alignItems: 'center' }}>
         <span style={{ fontSize: 14, fontWeight: 500, color: 'var(--c-fg)' }}>{label}</span>
       </div>
-      <div style={{
-        width: 28,
-        height: 28,
-        borderRadius: '50%',
-        boxShadow: ok ? 'var(--shadow-raised-xs)' : 'var(--shadow-inset-sm)',
-        background: 'var(--c-bg)',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        fontSize: 13,
-        color: ok ? 'var(--c-success)' : 'var(--c-failed)',
-        fontWeight: 600,
-      }}>
+      <span style={{ fontSize: 13, fontWeight: 600, color: ok ? 'var(--c-success)' : 'var(--c-failed)' }}>
         {ok ? '✓' : '✗'}
-      </div>
+      </span>
     </div>
   );
 }
