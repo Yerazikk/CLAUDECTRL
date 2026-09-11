@@ -15,7 +15,8 @@ interface Props {
 }
 
 export function ProjectView({ repo, tasks, sessions, onBack, getTaskOutput, getTaskParsed }: Props) {
-  const [newTaskInput, setNewTaskInput] = useState('');
+  const draftKey = `draft:${repo.id}`;
+  const [newTaskInput, setNewTaskInput] = useState(() => localStorage.getItem(draftKey) ?? '');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showArchived, setShowArchived] = useState(false);
@@ -83,6 +84,7 @@ export function ProjectView({ repo, tasks, sessions, onBack, getTaskOutput, getT
     try {
       await api.repos.submitTask(repo.id, msg);
       setNewTaskInput('');
+      localStorage.removeItem(draftKey);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to create task');
     } finally {
@@ -180,7 +182,7 @@ export function ProjectView({ repo, tasks, sessions, onBack, getTaskOutput, getT
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           <input
             value={newTaskInput}
-            onChange={(e) => setNewTaskInput(e.target.value)}
+            onChange={(e) => { setNewTaskInput(e.target.value); localStorage.setItem(draftKey, e.target.value); }}
             onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleNewTask(); } }}
             placeholder="New session \u2014 tell Claude what to do..."
             disabled={submitting}

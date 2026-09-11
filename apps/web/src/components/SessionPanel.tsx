@@ -39,9 +39,11 @@ export function SessionPanel({
   queuedTasks, onAddToQueue,
   onDragStart, onDragOver, onDrop,
 }: Props) {
+  const inputKey = `session-input:${task.id}`;
+  const queueKey = `session-queue:${task.id}`;
   const [showLogs, setShowLogs] = useState(false);
-  const [inputValue, setInputValue] = useState('');
-  const [queueInput, setQueueInput] = useState('');
+  const [inputValue, setInputValue] = useState(() => localStorage.getItem(inputKey) ?? '');
+  const [queueInput, setQueueInput] = useState(() => localStorage.getItem(queueKey) ?? '');
   const [error, setError] = useState<string | null>(null);
   const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
   const [editValue, setEditValue] = useState('');
@@ -63,6 +65,7 @@ export function SessionPanel({
     const msg = inputValue.trim();
     if (!msg) return;
     setInputValue('');
+    localStorage.removeItem(inputKey);
     await handleAction(() => api.repos.feedback(repoId, task.id, msg));
   };
 
@@ -70,6 +73,7 @@ export function SessionPanel({
     const msg = queueInput.trim();
     if (!msg || !task.sessionRef) return;
     setQueueInput('');
+    localStorage.removeItem(queueKey);
     onAddToQueue(task.sessionRef, msg);
   };
 
@@ -395,7 +399,7 @@ export function SessionPanel({
                 <div style={{ display: 'flex', gap: 6, padding: '4px 0 8px' }}>
                   <input
                     value={queueInput}
-                    onChange={(e) => setQueueInput(e.target.value)}
+                    onChange={(e) => { setQueueInput(e.target.value); localStorage.setItem(queueKey, e.target.value); }}
                     onKeyDown={(e) => { if (e.key === 'Enter') handleQueueSubmit(); }}
                     placeholder="Add to queue..."
                     style={{
@@ -471,7 +475,7 @@ export function SessionPanel({
         }}>
           <input
             value={inputValue}
-            onChange={(e) => setInputValue(e.target.value)}
+            onChange={(e) => { setInputValue(e.target.value); localStorage.setItem(inputKey, e.target.value); }}
             onKeyDown={(e) => { if (e.key === 'Enter') handleSendInput(); }}
             placeholder={isReview ? 'Give feedback...' : 'Message Claude...'}
             style={{
