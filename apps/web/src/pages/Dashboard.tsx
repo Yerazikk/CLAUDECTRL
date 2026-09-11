@@ -99,6 +99,7 @@ export function Dashboard({ repos, tasks, onSelectRepo, onAddRepo }: Props) {
               fontSize: 14,
               color: 'var(--c-fg)',
               background: 'transparent',
+              outline: 'none',
             }}
             aria-label="Search projects"
           />

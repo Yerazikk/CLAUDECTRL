@@ -58,7 +58,7 @@
   --space-2xl: 64px;
 
   font-family: var(--font);
-  font-size: 15px;
+  font-size: 17px;
   line-height: 1.5;
   color: var(--c-fg);
   background: var(--c-bg);
@@ -135,11 +135,9 @@ input, textarea {
   }
 }
 
-/* Focus visible — accent ring */
+/* Focus visible — no outline */
 :focus-visible {
-  outline: 2px solid var(--c-accent);
-  outline-offset: 3px;
-  border-radius: var(--r-xs);
+  outline: none;
 }
 
 /* Utility */

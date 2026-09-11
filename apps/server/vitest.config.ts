@@ -5,6 +5,11 @@ export default defineConfig({
   test: {
     environment: 'node',
     globals: false,
+    server: {
+      deps: {
+        external: ['better-sqlite3'],
+      },
+    },
   },
   resolve: {
     alias: {
