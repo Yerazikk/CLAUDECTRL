@@ -10,6 +10,7 @@ export type ServerEvent =
   | { type: 'task.done'; task: Task }
   | { type: 'task.failed'; taskId: string; error: string }
   | { type: 'task.stopped'; taskId: string }
+  | { type: 'task.deleted'; taskId: string }
   | { type: 'task.output'; taskId: string; line: string }
   | { type: 'session.started'; session: Session }
   | { type: 'session.resumed'; session: Session }

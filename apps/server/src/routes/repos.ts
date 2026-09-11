@@ -17,6 +17,8 @@ import {
   approveTask,
   submitFeedback,
   getTask,
+  deleteTask,
+  retryTask,
 } from '../managers/tasks';
 import { getDb } from '../db';
 import { getActivePreviewForRepo } from '../managers/preview';
@@ -104,6 +106,32 @@ export async function reposRoutes(app: FastifyInstance): Promise<void> {
       if (!task) return reply.status(404).send({ error: 'Task not found' });
       approveTask(req.params.taskId).catch(() => {}); // runs in background
       return { ok: true };
+    }
+  );
+
+  // Delete a task (failed/stopped/done only)
+  app.delete<{ Params: { id: string; taskId: string } }>(
+    '/api/repos/:id/tasks/:taskId',
+    async (req, reply) => {
+      try {
+        await deleteTask(req.params.taskId);
+        return { ok: true };
+      } catch (e: unknown) {
+        return reply.status(400).send({ error: e instanceof Error ? e.message : String(e) });
+      }
+    }
+  );
+
+  // Retry a failed/stopped task
+  app.post<{ Params: { id: string; taskId: string } }>(
+    '/api/repos/:id/tasks/:taskId/retry',
+    async (req, reply) => {
+      try {
+        const task = await retryTask(req.params.taskId);
+        return task;
+      } catch (e: unknown) {
+        return reply.status(400).send({ error: e instanceof Error ? e.message : String(e) });
+      }
     }
   );
 

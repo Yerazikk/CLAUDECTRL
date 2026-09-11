@@ -65,6 +65,12 @@ function applyEvent(state: AppState, event: ServerEvent): AppState {
         ),
       };
 
+    case 'task.deleted':
+      return {
+        ...state,
+        tasks: state.tasks.filter((t) => t.id !== event.taskId),
+      };
+
     case 'session.started':
     case 'session.resumed':
       return {

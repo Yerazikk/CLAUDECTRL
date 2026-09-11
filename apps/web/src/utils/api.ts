@@ -39,6 +39,10 @@ export const api = {
       api.post(`/api/repos/${id}/tasks/${taskId}/stop`),
     approveTask: (id: string, taskId: string) =>
       api.post(`/api/repos/${id}/tasks/${taskId}/approve`),
+    deleteTask: (id: string, taskId: string) =>
+      api.delete(`/api/repos/${id}/tasks/${taskId}`),
+    retryTask: (id: string, taskId: string) =>
+      api.post(`/api/repos/${id}/tasks/${taskId}/retry`),
   },
 
   github: {

@@ -16,6 +16,7 @@ import { startUsageScheduler, stopUsageScheduler } from './managers/usage';
 import { scanReposDirectory } from './managers/repos';
 import { ensureGeneralWorkspace } from './managers/general';
 import { getAllActivePreviews } from './managers/preview';
+import { recoverInterruptedTasks } from './managers/tasks';
 
 async function start(): Promise<void> {
   const cfg = loadConfig();
@@ -26,6 +27,7 @@ async function start(): Promise<void> {
   initLogger(dataDir);
   initDb(dataDir);
   logger.info('ClaudeCTRL starting up...');
+  recoverInterruptedTasks();
 
   // Initialize General workspace and scan repos directory on startup
   try { ensureGeneralWorkspace(); } catch (e) { logger.warn('General workspace init failed', e); }

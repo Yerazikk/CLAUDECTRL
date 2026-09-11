@@ -160,6 +160,29 @@ function buildPrompt(task: Task, repo: Repository, userMessage: string): string 
     .join('\n');
 }
 
+// On server startup, mark any tasks that were interrupted mid-run as failed
+export function recoverInterruptedTasks(): void {
+  const db = getDb();
+  const stuck = db.prepare(
+    "SELECT * FROM tasks WHERE status IN ('working', 'queued', 'validating')"
+  ).all() as Record<string, unknown>[];
+
+  if (stuck.length === 0) return;
+
+  logger.info(`Recovering ${stuck.length} interrupted task(s) from previous run`);
+  for (const row of stuck) {
+    const taskId = row.id as string;
+    const repoId = row.repo_id as string;
+    db.prepare(
+      "UPDATE tasks SET status = 'failed', last_result = ?, completed_at = datetime('now'), updated_at = datetime('now') WHERE id = ?"
+    ).run('Server restarted — task was interrupted', taskId);
+    db.prepare(
+      "UPDATE repositories SET status = 'idle', active_task_id = NULL, updated_at = datetime('now') WHERE id = ?"
+    ).run(repoId);
+    logger.info(`Marked interrupted task ${taskId} as failed`);
+  }
+}
+
 export async function createTask(repoId: string, userMessage: string): Promise<Task> {
   const db = getDb();
   const repo = getRepo(repoId);
@@ -234,16 +257,25 @@ async function runTask(task: Task, repo: Repository, userMessage: string, isResu
     if (!isResume) {
       // Create branch + worktree for new tasks
       const branchType = detectBranchType(userMessage);
-      const slug = userMessage.slice(0, 40).toLowerCase().replace(/[^a-z0-9 ]/g, '').trim().replace(/\s+/g, '-');
+      const slug = userMessage.slice(0, 20).toLowerCase().replace(/[^a-z0-9 ]/g, '').trim().replace(/\s+/g, '-');
       branch = getBranchName(branchType, slug);
+
+      broker.publish({ type: 'task.status', taskId: task.id, status: 'queued', message: 'Creating worktree...' });
 
       const worktreePath = getWorktreeSiblingPath(repo.path, branch);
       fs.mkdirSync(path.dirname(worktreePath), { recursive: true });
 
       try {
+        // Clean up stale worktree from a previous crashed run if it already exists
+        if (fs.existsSync(worktreePath)) {
+          logger.warn(`Stale worktree found at ${worktreePath}, cleaning up before recreating`);
+          removeWorktree(repo.path, worktreePath);
+        }
         createWorktree(repo.path, branch, worktreePath);
         workDir = worktreePath;
 
+        // Remove any stale DB row for this path before inserting
+        db.prepare('DELETE FROM worktrees WHERE path = ?').run(worktreePath);
         db.prepare(`
           INSERT INTO worktrees (id, repo_id, task_id, path, branch, active)
           VALUES (?, ?, ?, ?, ?, 1)
@@ -273,7 +305,7 @@ async function runTask(task: Task, repo: Repository, userMessage: string, isResu
       currentBranch: branch ?? getCurrentBranch(repo.path),
     });
 
-    publishTaskStatus(updatedTask, 'Working...');
+    publishTaskStatus(updatedTask, 'Starting Claude...');
     broker.publish({ type: 'task.started', task: updatedTask });
 
     const prompt = buildPrompt(updatedTask, repo, userMessage);
@@ -414,6 +446,50 @@ async function runValidation(taskId: string, repo: Repository, workDir: string):
   }
 
   await markReadyForReview(taskId, repo);
+}
+
+export async function deleteTask(taskId: string): Promise<void> {
+  const db = getDb();
+  const task = getTask(taskId);
+  if (!task) throw new Error(`Task ${taskId} not found`);
+
+  const active = ['working', 'validating', 'queued'];
+  if (active.includes(task.status)) {
+    throw new Error('Cannot delete an active task — stop it first');
+  }
+
+  // Clean up worktree if it exists
+  if (task.worktreePath) {
+    try {
+      const repo = getRepo(task.repoId);
+      if (repo) removeWorktree(repo.path, task.worktreePath);
+    } catch (e) {
+      logger.warn(`Worktree cleanup during delete failed for task ${taskId}`, e);
+    }
+    db.prepare('UPDATE worktrees SET active = 0 WHERE task_id = ?').run(taskId);
+  }
+
+  db.prepare('DELETE FROM messages WHERE task_id = ?').run(taskId);
+  db.prepare('DELETE FROM sessions WHERE task_id = ?').run(taskId);
+  db.prepare('DELETE FROM tasks WHERE id = ?').run(taskId);
+
+  broker.publish({ type: 'task.deleted', taskId });
+  logger.info(`Deleted task ${taskId}`);
+}
+
+export async function retryTask(taskId: string): Promise<Task> {
+  const task = getTask(taskId);
+  if (!task) throw new Error(`Task ${taskId} not found`);
+
+  const retryable = ['failed', 'stopped'];
+  if (!retryable.includes(task.status)) {
+    throw new Error('Only failed or stopped tasks can be retried');
+  }
+
+  const message = task.lastMessage ?? task.title;
+  if (!message) throw new Error('No original message to retry with');
+
+  return createTask(task.repoId, message);
 }
 
 async function markReadyForReview(taskId: string, repo: Repository): Promise<void> {
