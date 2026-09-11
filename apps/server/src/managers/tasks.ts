@@ -182,10 +182,10 @@ function updateSession(sessionId: string, updates: Partial<Session>): void {
 export function deriveRepoStatus(repoId: string): Repository['status'] {
   const db = getDb();
   const statuses = (db.prepare(
-    "SELECT DISTINCT status FROM tasks WHERE repo_id = ? AND status IN ('working','validating','committing','merging','queued','ready_for_review','paused')"
+    "SELECT DISTINCT status FROM tasks WHERE repo_id = ? AND status IN ('working','validating','committing','merging','resolving_conflict','queued','ready_for_review','paused')"
   ).all(repoId) as { status: string }[]).map(r => r.status);
 
-  if (statuses.includes('working') || statuses.includes('validating') || statuses.includes('committing') || statuses.includes('merging')) return 'working';
+  if (statuses.includes('working') || statuses.includes('validating') || statuses.includes('committing') || statuses.includes('merging') || statuses.includes('resolving_conflict')) return 'working';
   if (statuses.includes('queued')) return 'working';
   if (statuses.includes('ready_for_review')) return 'ready_for_review';
   return 'idle';
@@ -601,7 +601,7 @@ export async function deleteTask(taskId: string): Promise<void> {
   const task = getTask(taskId);
   if (!task) throw new Error(`Task ${taskId} not found`);
 
-  const active = ['working', 'validating', 'queued', 'committing', 'merging'];
+  const active = ['working', 'validating', 'queued', 'committing', 'merging', 'resolving_conflict'];
   if (active.includes(task.status)) {
     throw new Error('Cannot delete an active task — stop it first');
   }
@@ -719,13 +719,17 @@ export async function approveTask(taskId: string): Promise<void> {
         logger.warn(`Merge conflict during approval of task ${taskId}`, e);
         const errMsg = e instanceof Error ? e.message : String(e);
 
+        updateTask(taskId, { status: 'resolving_conflict' });
+        syncRepoStatus(repo.id);
+        publishTaskStatus(getTask(taskId)!, 'Merge conflict detected — asking Claude to fix it...');
+
         const result = await runClaude({
           taskId,
           workDir: repo.path,
           prompt: `There's a merge conflict when merging ${task.branch} into main. Error: ${errMsg}\n\nResolve all merge conflicts, commit the resolution, and ensure the code is working.`,
           sessionId: task.sessionId ?? undefined,
           onStatusUpdate: (status) => {
-            broker.publish({ type: 'task.status', taskId, status: 'merging', message: status });
+            broker.publish({ type: 'task.status', taskId, status: 'resolving_conflict', message: status });
           },
         });
 

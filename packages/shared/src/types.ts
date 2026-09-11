@@ -9,6 +9,7 @@ export type TaskStatus =
   | 'ready_for_review'
   | 'committing'
   | 'merging'
+  | 'resolving_conflict'
   | 'done'
   | 'failed'
   | 'stopped'

@@ -5,6 +5,7 @@ const colorMap: Record<string, string> = {
   validating: '#E8975A',
   committing: '#E8975A',
   merging: '#E8975A',
+  resolving_conflict: '#E05252',
   queued: '#A0AEC0',
   ready_for_review: '#D97757',
   done: '#38B2AC',
@@ -25,7 +26,7 @@ interface Props {
 
 export function StatusDot({ status, size = 6, pulse }: Props) {
   const color = colorMap[status] ?? '#C8CDD6';
-  const shouldPulse = pulse && (status === 'working' || status === 'validating' || status === 'queued' || status === 'committing' || status === 'merging');
+  const shouldPulse = pulse && (status === 'working' || status === 'validating' || status === 'queued' || status === 'committing' || status === 'merging' || status === 'resolving_conflict');
   return (
     <span
       style={{

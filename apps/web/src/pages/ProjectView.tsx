@@ -109,7 +109,7 @@ export function ProjectView({ repo, tasks, sessions, onBack, getTaskOutput, getT
       seenSessions.add(t.sessionRef);
       const sessionTasks = tasksBySession.get(t.sessionRef) ?? [];
       const activeInSession = sessionTasks.find(st =>
-        ['working', 'validating', 'committing', 'merging', 'queued', 'ready_for_review', 'paused'].includes(st.status)
+        ['working', 'validating', 'committing', 'merging', 'resolving_conflict', 'queued', 'ready_for_review', 'paused'].includes(st.status)
       );
       displayTasks.push(activeInSession ?? sessionTasks[0]);
     } else {

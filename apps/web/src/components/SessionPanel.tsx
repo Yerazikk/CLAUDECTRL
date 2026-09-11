@@ -14,6 +14,7 @@ const statusLabels: Record<Task['status'], string> = {
   ready_for_review: 'Review',
   committing: 'Committing',
   merging: 'Merging',
+  resolving_conflict: 'Fixing conflict',
   done: 'Done',
   failed: 'Failed',
   stopped: 'Stopped',
@@ -58,7 +59,7 @@ export function SessionPanel({
     });
   });
 
-  const isActive = ['working', 'validating', 'queued', 'committing', 'merging'].includes(task.status);
+  const isActive = ['working', 'validating', 'queued', 'committing', 'merging', 'resolving_conflict'].includes(task.status);
   const isPauseable = ['working', 'validating', 'queued'].includes(task.status);
   const isReview = task.status === 'ready_for_review';
   const isFailed = task.status === 'failed';
