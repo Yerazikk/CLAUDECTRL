@@ -628,6 +628,27 @@ export async function deleteTask(taskId: string): Promise<void> {
   logger.info(`Deleted task ${taskId}`);
 }
 
+export function editQueuedTask(taskId: string, newMessage: string): Task {
+  const db = getDb();
+  const task = getTask(taskId);
+  if (!task) throw new Error(`Task ${taskId} not found`);
+  if (task.status !== 'queued') throw new Error('Can only edit queued tasks');
+
+  const title = newMessage.slice(0, 80);
+  db.prepare(
+    "UPDATE tasks SET title = ?, last_message = ?, updated_at = datetime('now') WHERE id = ?"
+  ).run(title, newMessage, taskId);
+
+  // Update the latest user message for this task
+  db.prepare(
+    "UPDATE messages SET content = ? WHERE id = (SELECT id FROM messages WHERE task_id = ? AND role = 'user' ORDER BY created_at DESC LIMIT 1)"
+  ).run(newMessage, taskId);
+
+  const updated = getTask(taskId)!;
+  broker.publish({ type: 'task.created', task: updated });
+  return updated;
+}
+
 export async function retryTask(taskId: string): Promise<Task> {
   const task = getTask(taskId);
   if (!task) throw new Error(`Task ${taskId} not found`);

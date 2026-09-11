@@ -24,6 +24,7 @@ import {
   getTask,
   deleteTask,
   retryTask,
+  editQueuedTask,
 } from '../managers/tasks';
 import { getDb } from '../db';
 import { getActivePreviewForRepo } from '../managers/preview';
@@ -150,6 +151,21 @@ export async function reposRoutes(app: FastifyInstance): Promise<void> {
       if (!task) return reply.status(404).send({ error: 'Task not found' });
       approveTask(req.params.taskId).catch(() => {}); // runs in background
       return { ok: true };
+    }
+  );
+
+  // Edit a queued task's message
+  app.patch<{ Params: { id: string; taskId: string }; Body: { message: string } }>(
+    '/api/repos/:id/tasks/:taskId',
+    async (req, reply) => {
+      const { message } = req.body;
+      if (!message?.trim()) return reply.status(400).send({ error: 'message required' });
+      try {
+        const task = editQueuedTask(req.params.taskId, message.trim());
+        return task;
+      } catch (e: unknown) {
+        return reply.status(400).send({ error: e instanceof Error ? e.message : String(e) });
+      }
     }
   );
 

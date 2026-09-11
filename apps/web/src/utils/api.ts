@@ -4,6 +4,10 @@ const BASE = (() => {
   return `http://${hostname}:${serverPort}`;
 })();
 
+async function patch<T>(path: string, body?: unknown): Promise<T> {
+  return req<T>('PATCH', path, body);
+}
+
 async function req<T>(method: string, path: string, body?: unknown): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     method,
@@ -50,6 +54,8 @@ export const api = {
       api.post(`/api/repos/${id}/tasks/${taskId}/approve`),
     deleteTask: (id: string, taskId: string) =>
       api.delete(`/api/repos/${id}/tasks/${taskId}`),
+    editTask: (id: string, taskId: string, message: string) =>
+      patch(`/api/repos/${id}/tasks/${taskId}`, { message }),
     retryTask: (id: string, taskId: string) =>
       api.post(`/api/repos/${id}/tasks/${taskId}/retry`),
   },

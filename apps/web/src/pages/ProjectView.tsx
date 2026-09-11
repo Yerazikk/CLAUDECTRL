@@ -1,6 +1,8 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import type { Repository, Task, Session } from '@claudectrl/shared';
+import type { ParsedOutput } from '../utils/parseOutput';
 import { SessionPanel } from '../components/SessionPanel';
+import { useLayoutStore } from '../hooks/useLayoutStore';
 import { api } from '../utils/api';
 
 interface Props {
@@ -9,13 +11,17 @@ interface Props {
   sessions: Session[];
   onBack: () => void;
   getTaskOutput: (taskId: string) => string[];
+  getTaskParsed: (taskId: string) => ParsedOutput;
 }
 
-export function ProjectView({ repo, tasks, sessions, onBack, getTaskOutput }: Props) {
+export function ProjectView({ repo, tasks, sessions, onBack, getTaskOutput, getTaskParsed }: Props) {
   const [newTaskInput, setNewTaskInput] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showArchived, setShowArchived] = useState(false);
+  const dragTaskId = useRef<string | null>(null);
+
+  const { getLayout, setSize, swapOrder } = useLayoutStore(repo.id);
 
   useEffect(() => {
     api.repos.fetch(repo.id).catch(() => {});
@@ -33,10 +39,8 @@ export function ProjectView({ repo, tasks, sessions, onBack, getTaskOutput }: Pr
     }
   }
 
-  // Active tasks: not archived, not done (or recently done and not archived)
+  // Active tasks: not archived
   const activeTasks = repoTasks.filter(t => !t.archived);
-  // For display: show the "lead" task per session (the one currently running or most recent)
-  // and standalone tasks (no sessionRef)
   const displayTasks: Task[] = [];
   const seenSessions = new Set<string>();
 
@@ -44,7 +48,6 @@ export function ProjectView({ repo, tasks, sessions, onBack, getTaskOutput }: Pr
     if (t.sessionRef) {
       if (seenSessions.has(t.sessionRef)) continue;
       seenSessions.add(t.sessionRef);
-      // Find the active task in this session, or the most recent one
       const sessionTasks = tasksBySession.get(t.sessionRef) ?? [];
       const activeInSession = sessionTasks.find(st =>
         ['working', 'validating', 'queued', 'ready_for_review', 'paused'].includes(st.status)
@@ -55,12 +58,15 @@ export function ProjectView({ repo, tasks, sessions, onBack, getTaskOutput }: Pr
     }
   }
 
-  // Sort: active first, then by creation time desc
+  // Sort: layout order first, then status priority, then creation time desc
   const statusPriority: Record<string, number> = {
     working: 0, validating: 1, queued: 2, ready_for_review: 3, paused: 4,
     failed: 5, stopped: 6, done: 7,
   };
   displayTasks.sort((a, b) => {
+    const la = getLayout(a.id);
+    const lb = getLayout(b.id);
+    if (la.order !== lb.order) return la.order - lb.order;
     const pa = statusPriority[a.status] ?? 99;
     const pb = statusPriority[b.status] ?? 99;
     if (pa !== pb) return pa - pb;
@@ -98,6 +104,25 @@ export function ProjectView({ repo, tasks, sessions, onBack, getTaskOutput }: Pr
     } catch {}
   };
 
+  const handleDragStart = (taskId: string) => (e: React.DragEvent) => {
+    dragTaskId.current = taskId;
+    e.dataTransfer.effectAllowed = 'move';
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+  };
+
+  const handleDrop = (targetTaskId: string) => (e: React.DragEvent) => {
+    e.preventDefault();
+    const sourceId = dragTaskId.current;
+    if (sourceId && sourceId !== targetTaskId) {
+      swapOrder(sourceId, targetTaskId);
+    }
+    dragTaskId.current = null;
+  };
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', background: 'var(--c-bg)' }}>
 
@@ -125,7 +150,7 @@ export function ProjectView({ repo, tasks, sessions, onBack, getTaskOutput }: Pr
           onMouseEnter={(e) => { e.currentTarget.style.boxShadow = 'var(--shadow-raised-sm)'; e.currentTarget.style.color = 'var(--c-fg)'; }}
           onMouseLeave={(e) => { e.currentTarget.style.boxShadow = 'var(--shadow-raised-xs)'; e.currentTarget.style.color = 'var(--c-muted)'; }}
           aria-label="Back"
-        >←</button>
+        >{'\u2190'}</button>
 
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontSize: 15, fontWeight: 700, fontFamily: 'var(--font-display)', color: 'var(--c-fg)' }}>
@@ -133,13 +158,12 @@ export function ProjectView({ repo, tasks, sessions, onBack, getTaskOutput }: Pr
           </div>
           {repo.currentBranch && (
             <div style={{ fontSize: 11, color: 'var(--c-subtle)', fontFamily: 'var(--mono)', display: 'flex', alignItems: 'center', gap: 4, marginTop: 1 }}>
-              <span style={{ fontSize: 10 }}>⎇</span>
+              <span style={{ fontSize: 10 }}>{'\u238B'}</span>
               {repo.currentBranch}
             </div>
           )}
         </div>
 
-        {/* Session count */}
         {displayTasks.length > 0 && (
           <span style={{
             fontSize: 11, fontWeight: 600, color: 'var(--c-subtle)',
@@ -152,39 +176,25 @@ export function ProjectView({ repo, tasks, sessions, onBack, getTaskOutput }: Pr
       </div>
 
       {/* New session input */}
-      <div style={{
-        padding: '12px 20px',
-        flexShrink: 0,
-      }}>
-        <div style={{
-          display: 'flex',
-          gap: 8,
-          alignItems: 'center',
-        }}>
+      <div style={{ padding: '12px 20px', flexShrink: 0 }}>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           <input
             value={newTaskInput}
             onChange={(e) => setNewTaskInput(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleNewTask(); } }}
-            placeholder="New session — tell Claude what to do..."
+            placeholder="New session \u2014 tell Claude what to do..."
             disabled={submitting}
             style={{
-              flex: 1,
-              fontSize: 13,
-              padding: '10px 16px',
-              borderRadius: 'var(--r-xl)',
-              boxShadow: 'var(--shadow-inset)',
-              background: 'var(--c-bg)',
-              color: 'var(--c-fg)',
-              fontFamily: 'var(--font)',
+              flex: 1, fontSize: 13, padding: '10px 16px',
+              borderRadius: 'var(--r-xl)', boxShadow: 'var(--shadow-inset)',
+              background: 'var(--c-bg)', color: 'var(--c-fg)', fontFamily: 'var(--font)',
             }}
           />
           <button
             onClick={handleNewTask}
             disabled={submitting || !newTaskInput.trim()}
             style={{
-              width: 38, height: 38,
-              borderRadius: '50%',
-              fontSize: 16,
+              width: 38, height: 38, borderRadius: '50%', fontSize: 16,
               background: newTaskInput.trim() && !submitting ? 'var(--c-accent)' : 'var(--c-bg)',
               color: newTaskInput.trim() && !submitting ? '#fff' : 'var(--c-subtle)',
               boxShadow: newTaskInput.trim() && !submitting
@@ -203,17 +213,13 @@ export function ProjectView({ repo, tasks, sessions, onBack, getTaskOutput }: Pr
             display: 'flex', justifyContent: 'space-between', alignItems: 'center',
           }}>
             <span>{error}</span>
-            <button onClick={() => setError(null)} style={{ color: 'var(--c-failed)', fontSize: 16 }}>×</button>
+            <button onClick={() => setError(null)} style={{ color: 'var(--c-failed)', fontSize: 16 }}>{'\u00D7'}</button>
           </div>
         )}
       </div>
 
       {/* Session grid */}
-      <div style={{
-        flex: 1,
-        overflow: 'auto',
-        padding: '0 20px 20px',
-      }}>
+      <div style={{ flex: 1, overflow: 'auto', padding: '0 20px 20px' }}>
         {displayTasks.length === 0 && (
           <div style={{
             display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -224,9 +230,9 @@ export function ProjectView({ repo, tasks, sessions, onBack, getTaskOutput }: Pr
               boxShadow: 'var(--shadow-inset)', background: 'var(--c-bg)',
               display: 'flex', alignItems: 'center', justifyContent: 'center',
               fontSize: 22,
-            }}>✦</div>
+            }}>{'\u2726'}</div>
             <p style={{ fontSize: 14, fontWeight: 600, color: 'var(--c-muted)' }}>No sessions</p>
-            <p style={{ fontSize: 13, color: 'var(--c-subtle)' }}>Start one above — each session gets its own branch</p>
+            <p style={{ fontSize: 13, color: 'var(--c-subtle)' }}>Start one above {'\u2014'} each session gets its own branch</p>
           </div>
         )}
 
@@ -237,17 +243,22 @@ export function ProjectView({ repo, tasks, sessions, onBack, getTaskOutput }: Pr
         }}>
           {displayTasks.map(task => {
             const sessionTasks = task.sessionRef ? (tasksBySession.get(task.sessionRef) ?? []) : [];
-            const queued = sessionTasks.filter(st =>
-              st.id !== task.id && st.status === 'queued'
-            );
+            const queued = sessionTasks.filter(st => st.id !== task.id && st.status === 'queued');
+            const layout = getLayout(task.id);
             return (
               <SessionPanel
                 key={task.id}
                 task={task}
                 repoId={repo.id}
                 output={getTaskOutput(task.id)}
+                parsed={getTaskParsed(task.id)}
+                size={layout.size}
+                onSizeChange={(s) => setSize(task.id, s)}
                 queuedTasks={queued}
                 onAddToQueue={handleAddToQueue}
+                onDragStart={handleDragStart(task.id)}
+                onDragOver={handleDragOver}
+                onDrop={handleDrop(task.id)}
               />
             );
           })}
@@ -263,11 +274,10 @@ export function ProjectView({ repo, tasks, sessions, onBack, getTaskOutput }: Pr
                 textTransform: 'uppercase', letterSpacing: 1,
                 padding: '6px 12px', borderRadius: 'var(--r-full)',
                 boxShadow: showArchived ? 'var(--shadow-inset-sm)' : 'var(--shadow-raised-xs)',
-                background: 'var(--c-bg)',
-                transition: 'box-shadow 0.2s',
+                background: 'var(--c-bg)', transition: 'box-shadow 0.2s',
               }}
             >
-              Archived ({archivedTasks.length}) {showArchived ? '▼' : '▶'}
+              Archived ({archivedTasks.length}) {showArchived ? '\u25BC' : '\u25B6'}
             </button>
 
             {showArchived && (
@@ -280,10 +290,8 @@ export function ProjectView({ repo, tasks, sessions, onBack, getTaskOutput }: Pr
                 {archivedTasks.map(t => (
                   <div key={t.id} style={{
                     display: 'flex', alignItems: 'center', gap: 8,
-                    padding: '8px 12px',
-                    borderRadius: 'var(--r-md)',
-                    boxShadow: 'var(--shadow-raised-xs)',
-                    background: 'var(--c-bg)',
+                    padding: '8px 12px', borderRadius: 'var(--r-md)',
+                    boxShadow: 'var(--shadow-raised-xs)', background: 'var(--c-bg)',
                   }}>
                     <StatusDotInline status={t.status} />
                     <span style={{
@@ -309,7 +317,6 @@ export function ProjectView({ repo, tasks, sessions, onBack, getTaskOutput }: Pr
   );
 }
 
-// Inline mini status dot (avoids importing StatusDot for simple archived list)
 function StatusDotInline({ status }: { status: string }) {
   const colors: Record<string, string> = {
     done: '#38B2AC', failed: '#E05252', stopped: '#A0AEC0', paused: '#D4A017',

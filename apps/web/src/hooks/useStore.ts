@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import type { Repository, Task, Session, UsageSnapshot, Preview } from '@claudectrl/shared';
 import type { ServerEvent, StateSnapshot } from '@claudectrl/shared';
+import { type ParsedOutput, createParsedOutput, updateParsedOutput } from '../utils/parseOutput';
 
 export interface AppState {
   repos: Repository[];
@@ -126,6 +127,8 @@ export function useStore() {
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const taskOutputs = useRef<Map<string, string[]>>(new Map());
   const [taskOutputMap, setTaskOutputMap] = useState<Map<string, string[]>>(new Map());
+  const parsedOutputs = useRef<Map<string, ParsedOutput>>(new Map());
+  const [parsedOutputVer, setParsedOutputVer] = useState(0);
 
   const connect = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) return;
@@ -150,6 +153,15 @@ export function useStore() {
           if (lines.length > 500) lines.splice(0, lines.length - 500);
           taskOutputs.current.set(event.taskId, lines);
           setTaskOutputMap(new Map(taskOutputs.current));
+
+          // Update parsed output incrementally
+          let parsed = parsedOutputs.current.get(event.taskId);
+          if (!parsed) {
+            parsed = createParsedOutput();
+            parsedOutputs.current.set(event.taskId, parsed);
+          }
+          updateParsedOutput(parsed, event.line);
+          setParsedOutputVer(v => v + 1);
           return;
         }
         setState((s) => applyEvent(s, event));
@@ -179,5 +191,10 @@ export function useStore() {
     return taskOutputMap.get(taskId) ?? [];
   }, [taskOutputMap]);
 
-  return { state, getTaskOutput };
+  const getTaskParsed = useCallback((taskId: string): ParsedOutput => {
+    return parsedOutputs.current.get(taskId) ?? createParsedOutput();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [parsedOutputVer]);
+
+  return { state, getTaskOutput, getTaskParsed };
 }
