@@ -1,0 +1,46 @@
+server:
+  host: 0.0.0.0
+  port: 4173
+
+repos:
+  directory: "C:/Users/yeraz/Documents/GitHub"  # Set to your GitHub directory, e.g. C:/Users/me/GitHub
+
+agent:
+  provider: claude-code
+  permission_mode: dangerously-skip-permissions
+
+prompts:
+  task_wrapper: ./prompts/task.md
+  manager: ./prompts/manager.md
+  general: ./prompts/general.md
+
+voice:
+  enabled: true
+  provider: browser
+
+git:
+  branch_strategy: feature
+
+  branch_prefixes:
+    feature: feature/
+    bugfix: fix/
+    refactor: refactor/
+
+  commits:
+    enabled: true
+    style: short
+    max_subject_length: 50
+    conventional_commits: false
+    ai_attribution: false
+
+  approval:
+    merge_to_main: true
+    push_main: true
+
+vercel:
+  enabled: false
+
+notifications:
+  enabled: true
+
+data_dir: ./data
