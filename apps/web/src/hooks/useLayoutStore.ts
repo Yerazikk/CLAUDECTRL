@@ -1,10 +1,27 @@
 import { useState, useCallback } from 'react';
 
-export type PanelSize = 'compact' | 'normal' | 'expanded';
-
 export interface PanelLayout {
-  order: number;
-  size: PanelSize;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+const CARD_W = 380;
+const CARD_H = 260;
+const COL0_X = 20;
+const COL1_X = 420;
+const GAP = 16;
+
+function calcInitialLayout(index: number): PanelLayout {
+  const col = index % 2;
+  const row = Math.floor(index / 2);
+  return {
+    x: col === 0 ? COL0_X : COL1_X,
+    y: 20 + row * (CARD_H + GAP),
+    width: CARD_W,
+    height: CARD_H,
+  };
 }
 
 interface LayoutMap {
@@ -33,39 +50,18 @@ function saveLayouts(repoId: string, layouts: LayoutMap): void {
 export function useLayoutStore(repoId: string) {
   const [layouts, setLayouts] = useState<LayoutMap>(() => loadLayouts(repoId));
 
-  const getLayout = useCallback((taskId: string): PanelLayout => {
-    return layouts[taskId] ?? { order: 0, size: 'normal' };
+  const getLayout = useCallback((taskId: string, index: number): PanelLayout => {
+    return layouts[taskId] ?? calcInitialLayout(index);
   }, [layouts]);
 
-  const setSize = useCallback((taskId: string, size: PanelSize) => {
+  const setLayout = useCallback((taskId: string, partial: Partial<PanelLayout>) => {
     setLayouts(prev => {
-      const next = { ...prev, [taskId]: { ...(prev[taskId] ?? { order: 0 }), size } };
+      const existing = prev[taskId] ?? calcInitialLayout(0);
+      const next = { ...prev, [taskId]: { ...existing, ...partial } };
       saveLayouts(repoId, next);
       return next;
     });
   }, [repoId]);
 
-  const setOrder = useCallback((taskId: string, order: number) => {
-    setLayouts(prev => {
-      const next = { ...prev, [taskId]: { ...(prev[taskId] ?? { size: 'normal' }), order } };
-      saveLayouts(repoId, next);
-      return next;
-    });
-  }, [repoId]);
-
-  const swapOrder = useCallback((taskIdA: string, taskIdB: string) => {
-    setLayouts(prev => {
-      const layoutA = prev[taskIdA] ?? { order: 0, size: 'normal' };
-      const layoutB = prev[taskIdB] ?? { order: 0, size: 'normal' };
-      const next = {
-        ...prev,
-        [taskIdA]: { ...layoutA, order: layoutB.order },
-        [taskIdB]: { ...layoutB, order: layoutA.order },
-      };
-      saveLayouts(repoId, next);
-      return next;
-    });
-  }, [repoId]);
-
-  return { getLayout, setSize, setOrder, swapOrder };
+  return { getLayout, setLayout };
 }

@@ -7,6 +7,8 @@ export type TaskStatus =
   | 'working'
   | 'validating'
   | 'ready_for_review'
+  | 'committing'
+  | 'merging'
   | 'done'
   | 'failed'
   | 'stopped'

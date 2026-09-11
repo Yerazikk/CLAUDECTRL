@@ -1,8 +1,9 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import type { Repository, Task, Session } from '@claudectrl/shared';
 import type { ParsedOutput } from '../utils/parseOutput';
 import { SessionPanel } from '../components/SessionPanel';
 import { useLayoutStore } from '../hooks/useLayoutStore';
+import type { PanelLayout } from '../hooks/useLayoutStore';
 import { api } from '../utils/api';
 
 interface Props {
@@ -19,14 +20,71 @@ export function ProjectView({ repo, tasks, sessions, onBack, getTaskOutput, getT
   const [newTaskInput, setNewTaskInput] = useState(() => localStorage.getItem(draftKey) ?? '');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [showArchived, setShowArchived] = useState(false);
-  const dragTaskId = useRef<string | null>(null);
+  const [showArchived, setShowArchived] = useState(true);
+  const [activeTabId, setActiveTabId] = useState<string | null>(null);
+  const [isMobile, setIsMobile] = useState(() => window.innerWidth < 640);
 
-  const { getLayout, setSize, swapOrder } = useLayoutStore(repo.id);
+  const { getLayout, setLayout } = useLayoutStore(repo.id);
+
+  // Drag/resize state
+  const dragging = useRef<{ taskId: string; startX: number; startY: number; origX: number; origY: number } | null>(null);
+  const resizing = useRef<{ taskId: string; dir: 'right' | 'bottom' | 'corner'; startX: number; startY: number; origW: number; origH: number } | null>(null);
+  const liveRef = useRef<Record<string, Partial<PanelLayout>>>({});
+  const [liveLayouts, setLiveLayouts] = useState<Record<string, Partial<PanelLayout>>>({});
+
+  useEffect(() => {
+    const h = () => setIsMobile(window.innerWidth < 640);
+    window.addEventListener('resize', h);
+    return () => window.removeEventListener('resize', h);
+  }, []);
 
   useEffect(() => {
     api.repos.fetch(repo.id).catch(() => {});
   }, [repo.id]);
+
+  // Document-level mouse event listeners for drag/resize
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      if (dragging.current) {
+        const { taskId, startX, startY, origX, origY } = dragging.current;
+        liveRef.current[taskId] = {
+          x: Math.max(0, origX + e.clientX - startX),
+          y: Math.max(0, origY + e.clientY - startY),
+        };
+        setLiveLayouts({ ...liveRef.current });
+      }
+      if (resizing.current) {
+        const { taskId, dir, startX, startY, origW, origH } = resizing.current;
+        const dx = e.clientX - startX;
+        const dy = e.clientY - startY;
+        liveRef.current[taskId] = {
+          width: dir !== 'bottom' ? Math.max(220, origW + dx) : origW,
+          height: dir !== 'right' ? Math.max(120, origH + dy) : origH,
+        };
+        setLiveLayouts({ ...liveRef.current });
+      }
+    };
+    const onUp = () => {
+      for (const ref of [dragging, resizing] as const) {
+        if (ref.current) {
+          const { taskId } = ref.current;
+          if (liveRef.current[taskId]) {
+            setLayout(taskId, liveRef.current[taskId]);
+            delete liveRef.current[taskId];
+            setLiveLayouts({ ...liveRef.current });
+          }
+          ref.current = null;
+        }
+      }
+      document.body.style.userSelect = '';
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+    return () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    };
+  }, [setLayout]);
 
   const repoTasks = tasks.filter(t => t.repoId === repo.id);
 
@@ -51,7 +109,7 @@ export function ProjectView({ repo, tasks, sessions, onBack, getTaskOutput, getT
       seenSessions.add(t.sessionRef);
       const sessionTasks = tasksBySession.get(t.sessionRef) ?? [];
       const activeInSession = sessionTasks.find(st =>
-        ['working', 'validating', 'queued', 'ready_for_review', 'paused'].includes(st.status)
+        ['working', 'validating', 'committing', 'merging', 'queued', 'ready_for_review', 'paused'].includes(st.status)
       );
       displayTasks.push(activeInSession ?? sessionTasks[0]);
     } else {
@@ -59,15 +117,12 @@ export function ProjectView({ repo, tasks, sessions, onBack, getTaskOutput, getT
     }
   }
 
-  // Sort: layout order first, then status priority, then creation time desc
+  // Sort: status priority, then creation time desc
   const statusPriority: Record<string, number> = {
     working: 0, validating: 1, queued: 2, ready_for_review: 3, paused: 4,
     failed: 5, stopped: 6, done: 7,
   };
   displayTasks.sort((a, b) => {
-    const la = getLayout(a.id);
-    const lb = getLayout(b.id);
-    if (la.order !== lb.order) return la.order - lb.order;
     const pa = statusPriority[a.status] ?? 99;
     const pb = statusPriority[b.status] ?? 99;
     if (pa !== pb) return pa - pb;
@@ -75,6 +130,22 @@ export function ProjectView({ repo, tasks, sessions, onBack, getTaskOutput, getT
   });
 
   const archivedTasks = repoTasks.filter(t => t.archived);
+
+  // Layout resolver
+  function resolvedLayout(taskId: string, idx: number): PanelLayout {
+    const stored = getLayout(taskId, idx);
+    const live = liveLayouts[taskId];
+    return live ? { ...stored, ...live } : stored;
+  }
+
+  // Canvas min height
+  const canvasMinHeight = displayTasks.reduce((max, t, i) => {
+    const l = resolvedLayout(t.id, i);
+    return Math.max(max, l.y + l.height + 40);
+  }, 400);
+
+  // Mobile: active tab
+  const activeTask = displayTasks.find(t => t.id === activeTabId) ?? displayTasks[0];
 
   const handleNewTask = async () => {
     const msg = newTaskInput.trim();
@@ -106,24 +177,23 @@ export function ProjectView({ repo, tasks, sessions, onBack, getTaskOutput, getT
     } catch {}
   };
 
-  const handleDragStart = (taskId: string) => (e: React.DragEvent) => {
-    dragTaskId.current = taskId;
-    e.dataTransfer.effectAllowed = 'move';
-  };
-
-  const handleDragOver = (e: React.DragEvent) => {
+  const handleDragHeaderMouseDown = useCallback((taskId: string, idx: number) => (e: React.MouseEvent) => {
+    if ((e.target as HTMLElement).closest('button')) return;
     e.preventDefault();
-    e.dataTransfer.dropEffect = 'move';
-  };
+    document.body.style.userSelect = 'none';
+    const layout = resolvedLayout(taskId, idx);
+    dragging.current = { taskId, startX: e.clientX, startY: e.clientY, origX: layout.x, origY: layout.y };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [liveLayouts]);
 
-  const handleDrop = (targetTaskId: string) => (e: React.DragEvent) => {
+  const handleResizeMouseDown = useCallback((taskId: string, dir: 'right' | 'bottom' | 'corner', idx: number) => (e: React.MouseEvent) => {
     e.preventDefault();
-    const sourceId = dragTaskId.current;
-    if (sourceId && sourceId !== targetTaskId) {
-      swapOrder(sourceId, targetTaskId);
-    }
-    dragTaskId.current = null;
-  };
+    e.stopPropagation();
+    document.body.style.userSelect = 'none';
+    const layout = resolvedLayout(taskId, idx);
+    resizing.current = { taskId, dir, startX: e.clientX, startY: e.clientY, origW: layout.width, origH: layout.height };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [liveLayouts]);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', background: 'var(--c-bg)' }}>
@@ -220,101 +290,150 @@ export function ProjectView({ repo, tasks, sessions, onBack, getTaskOutput, getT
         )}
       </div>
 
-      {/* Session grid */}
-      <div style={{ flex: 1, overflow: 'auto', padding: '0 20px 20px' }}>
-        {displayTasks.length === 0 && (
+      {/* Mobile: tab bar + active panel */}
+      {isMobile ? (
+        <div style={{ display: 'flex', flexDirection: 'column', flex: 1, overflow: 'hidden' }}>
           <div style={{
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            flexDirection: 'column', gap: 8, padding: '60px 20px',
+            display: 'flex', overflowX: 'auto', gap: 6,
+            padding: '8px 12px', flexShrink: 0, scrollbarWidth: 'none',
           }}>
-            <div style={{
-              width: 56, height: 56, borderRadius: '50%',
-              boxShadow: 'var(--shadow-inset)', background: 'var(--c-bg)',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              fontSize: 22,
-            }}>{'\u2726'}</div>
-            <p style={{ fontSize: 14, fontWeight: 600, color: 'var(--c-muted)' }}>No sessions</p>
-            <p style={{ fontSize: 13, color: 'var(--c-subtle)' }}>Start one above {'\u2014'} each session gets its own branch</p>
+            {displayTasks.map(task => {
+              const isActiveTab = (activeTabId === task.id) || (!activeTabId && task === displayTasks[0]);
+              return (
+                <button key={task.id} onClick={() => setActiveTabId(task.id)} style={{
+                  display: 'flex', alignItems: 'center', gap: 5,
+                  padding: '5px 12px', borderRadius: 'var(--r-full)',
+                  fontSize: 12, fontWeight: isActiveTab ? 600 : 400,
+                  color: isActiveTab ? 'var(--c-accent)' : 'var(--c-muted)',
+                  boxShadow: isActiveTab ? 'var(--shadow-inset-sm)' : 'var(--shadow-raised-xs)',
+                  background: 'var(--c-bg)', flexShrink: 0, whiteSpace: 'nowrap',
+                }}>
+                  <StatusDotInline status={task.status} />
+                  {task.title.slice(0, 30)}
+                </button>
+              );
+            })}
           </div>
-        )}
-
-        <div style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fill, minmax(360px, 1fr))',
-          gap: 16,
-        }}>
-          {displayTasks.map(task => {
-            const sessionTasks = task.sessionRef ? (tasksBySession.get(task.sessionRef) ?? []) : [];
-            const queued = sessionTasks.filter(st => st.id !== task.id && st.status === 'queued');
-            const layout = getLayout(task.id);
+          {activeTask && (() => {
+            const sessionTasks = activeTask.sessionRef ? (tasksBySession.get(activeTask.sessionRef) ?? []) : [];
+            const activeQueued = sessionTasks.filter(st => st.id !== activeTask.id && st.status === 'queued');
             return (
-              <SessionPanel
-                key={task.id}
-                task={task}
-                repoId={repo.id}
-                output={getTaskOutput(task.id)}
-                parsed={getTaskParsed(task.id)}
-                size={layout.size}
-                onSizeChange={(s) => setSize(task.id, s)}
-                queuedTasks={queued}
-                onAddToQueue={handleAddToQueue}
-                onDragStart={handleDragStart(task.id)}
-                onDragOver={handleDragOver}
-                onDrop={handleDrop(task.id)}
-              />
+              <div style={{ flex: 1, overflow: 'auto', padding: 12 }}>
+                <SessionPanel
+                  task={activeTask}
+                  repoId={repo.id}
+                  output={getTaskOutput(activeTask.id)}
+                  parsed={getTaskParsed(activeTask.id)}
+                  queuedTasks={activeQueued}
+                  onAddToQueue={handleAddToQueue}
+                />
+              </div>
             );
-          })}
+          })()}
+          {displayTasks.length === 0 && <EmptyState />}
         </div>
-
-        {/* Archived section */}
-        {archivedTasks.length > 0 && (
-          <div style={{ marginTop: 24 }}>
-            <button
-              onClick={() => setShowArchived(!showArchived)}
-              style={{
-                fontSize: 11, fontWeight: 600, color: 'var(--c-subtle)',
-                textTransform: 'uppercase', letterSpacing: 1,
-                padding: '6px 12px', borderRadius: 'var(--r-full)',
-                boxShadow: showArchived ? 'var(--shadow-inset-sm)' : 'var(--shadow-raised-xs)',
-                background: 'var(--c-bg)', transition: 'box-shadow 0.2s',
-              }}
-            >
-              Archived ({archivedTasks.length}) {showArchived ? '\u25BC' : '\u25B6'}
-            </button>
-
-            {showArchived && (
-              <div style={{
-                marginTop: 12,
-                display: 'grid',
-                gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))',
-                gap: 8,
-              }}>
-                {archivedTasks.map(t => (
-                  <div key={t.id} style={{
-                    display: 'flex', alignItems: 'center', gap: 8,
-                    padding: '8px 12px', borderRadius: 'var(--r-md)',
-                    boxShadow: 'var(--shadow-raised-xs)', background: 'var(--c-bg)',
-                  }}>
-                    <StatusDotInline status={t.status} />
-                    <span style={{
-                      fontSize: 12, color: 'var(--c-muted)', flex: 1,
-                      overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                    }}>{t.title}</span>
-                    <button
-                      onClick={() => handleUnarchive(t.id)}
-                      style={{
-                        fontSize: 10, color: 'var(--c-accent)', padding: '3px 8px',
-                        borderRadius: 'var(--r-full)', boxShadow: 'var(--shadow-raised-xs)',
-                        background: 'var(--c-bg)',
-                      }}
-                    >Unarchive</button>
-                  </div>
-                ))}
+      ) : (
+        /* Desktop: canvas */
+        <div style={{ flex: 1, overflow: 'auto' }}>
+          <div style={{ position: 'relative', minHeight: canvasMinHeight }}>
+            {displayTasks.length === 0 && (
+              <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <EmptyState />
               </div>
             )}
+            {displayTasks.map((task, idx) => {
+              const layout = resolvedLayout(task.id, idx);
+              const sessionTasks = task.sessionRef ? (tasksBySession.get(task.sessionRef) ?? []) : [];
+              const queued = sessionTasks.filter(st => st.id !== task.id && st.status === 'queued');
+              return (
+                <div key={task.id} style={{
+                  position: 'absolute',
+                  left: layout.x, top: layout.y,
+                  width: layout.width, height: layout.height,
+                }}>
+                  <SessionPanel
+                    task={task}
+                    repoId={repo.id}
+                    output={getTaskOutput(task.id)}
+                    parsed={getTaskParsed(task.id)}
+                    queuedTasks={queued}
+                    onAddToQueue={handleAddToQueue}
+                    onDragHandleMouseDown={handleDragHeaderMouseDown(task.id, idx)}
+                    onResizeMouseDown={(dir) => handleResizeMouseDown(task.id, dir, idx)}
+                  />
+                </div>
+              );
+            })}
           </div>
-        )}
-      </div>
+
+          {/* Archived section — normal flow below canvas */}
+          {archivedTasks.length > 0 && (
+            <div style={{ padding: '0 20px 20px' }}>
+              <button
+                onClick={() => setShowArchived(!showArchived)}
+                style={{
+                  fontSize: 11, fontWeight: 600, color: 'var(--c-subtle)',
+                  textTransform: 'uppercase', letterSpacing: 1,
+                  padding: '6px 12px', borderRadius: 'var(--r-full)',
+                  boxShadow: showArchived ? 'var(--shadow-inset-sm)' : 'var(--shadow-raised-xs)',
+                  background: 'var(--c-bg)', transition: 'box-shadow 0.2s',
+                }}
+              >
+                Archived ({archivedTasks.length}) {showArchived ? '\u25BC' : '\u25B6'}
+              </button>
+
+              {showArchived && (
+                <div style={{
+                  marginTop: 12,
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))',
+                  gap: 8,
+                }}>
+                  {archivedTasks.map(t => (
+                    <div key={t.id} style={{
+                      display: 'flex', alignItems: 'center', gap: 8,
+                      padding: '8px 12px', borderRadius: 'var(--r-md)',
+                      boxShadow: 'var(--shadow-raised-xs)', background: 'var(--c-bg)',
+                    }}>
+                      <StatusDotInline status={t.status} />
+                      <span style={{
+                        fontSize: 12, color: 'var(--c-muted)', flex: 1,
+                        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                      }}>{t.title}</span>
+                      <button
+                        onClick={() => handleUnarchive(t.id)}
+                        style={{
+                          fontSize: 10, color: 'var(--c-accent)', padding: '3px 8px',
+                          borderRadius: 'var(--r-full)', boxShadow: 'var(--shadow-raised-xs)',
+                          background: 'var(--c-bg)',
+                        }}
+                      >Restore</button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function EmptyState() {
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      flexDirection: 'column', gap: 8, padding: '60px 20px',
+    }}>
+      <div style={{
+        width: 56, height: 56, borderRadius: '50%',
+        boxShadow: 'var(--shadow-inset)', background: 'var(--c-bg)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        fontSize: 22,
+      }}>{'\u2726'}</div>
+      <p style={{ fontSize: 14, fontWeight: 600, color: 'var(--c-muted)' }}>No sessions</p>
+      <p style={{ fontSize: 13, color: 'var(--c-subtle)' }}>Start one above {'\u2014'} each session gets its own branch</p>
     </div>
   );
 }

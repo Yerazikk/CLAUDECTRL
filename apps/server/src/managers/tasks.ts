@@ -182,10 +182,10 @@ function updateSession(sessionId: string, updates: Partial<Session>): void {
 export function deriveRepoStatus(repoId: string): Repository['status'] {
   const db = getDb();
   const statuses = (db.prepare(
-    "SELECT DISTINCT status FROM tasks WHERE repo_id = ? AND status IN ('working','validating','queued','ready_for_review','paused')"
+    "SELECT DISTINCT status FROM tasks WHERE repo_id = ? AND status IN ('working','validating','committing','merging','queued','ready_for_review','paused')"
   ).all(repoId) as { status: string }[]).map(r => r.status);
 
-  if (statuses.includes('working') || statuses.includes('validating')) return 'working';
+  if (statuses.includes('working') || statuses.includes('validating') || statuses.includes('committing') || statuses.includes('merging')) return 'working';
   if (statuses.includes('queued')) return 'working';
   if (statuses.includes('ready_for_review')) return 'ready_for_review';
   return 'idle';
@@ -392,7 +392,9 @@ async function runTask(task: Task, repo: Repository, userMessage: string, isResu
       // Queued task in existing session: reuse session's worktree + Claude session
       const session = getSession(sessionRef);
       if (session) {
-        workDir = session.worktreePath ?? repo.path;
+        // Worktree may have been cleaned up after approval — fall back to repo.path
+        const wtPath = session.worktreePath;
+        workDir = (wtPath && fs.existsSync(wtPath)) ? wtPath : repo.path;
         branch = session.branch;
         claudeSessionIdToResume = session.claudeSessionId ?? undefined;
         updateTask(task.id, { worktreePath: workDir !== repo.path ? workDir : null, branch, sessionRef });
@@ -599,7 +601,7 @@ export async function deleteTask(taskId: string): Promise<void> {
   const task = getTask(taskId);
   if (!task) throw new Error(`Task ${taskId} not found`);
 
-  const active = ['working', 'validating', 'queued'];
+  const active = ['working', 'validating', 'queued', 'committing', 'merging'];
   if (active.includes(task.status)) {
     throw new Error('Cannot delete an active task — stop it first');
   }
@@ -665,8 +667,26 @@ export async function retryTask(taskId: string): Promise<Task> {
 }
 
 async function markReadyForReview(taskId: string, repo: Repository): Promise<void> {
+  const db = getDb();
   const task = getTask(taskId);
   if (!task) return;
+
+  // If this session has more queued tasks, auto-complete without review so the
+  // queue runs through uninterrupted. Only the last task in the queue gets reviewed.
+  if (task.sessionRef) {
+    const nextQueued = db.prepare(
+      "SELECT id FROM tasks WHERE session_ref = ? AND id != ? AND status = 'queued' LIMIT 1"
+    ).get(task.sessionRef, taskId) as { id: string } | undefined;
+
+    if (nextQueued) {
+      const done = updateTask(taskId, { status: 'done', completedAt: new Date().toISOString() });
+      syncRepoStatus(repo.id);
+      publishTaskStatus(done);
+      broker.publish({ type: 'task.done', task: done });
+      return;
+    }
+  }
+
   const updated = updateTask(taskId, { status: 'ready_for_review' });
   syncRepoStatus(repo.id);
   publishTaskStatus(updated);
@@ -679,15 +699,19 @@ export async function approveTask(taskId: string): Promise<void> {
   const repo = getRepo(task.repoId);
   if (!repo) throw new Error('Repo not found');
 
-  updateTask(taskId, { status: 'working' });
+  updateTask(taskId, { status: 'committing' });
   syncRepoStatus(repo.id);
-  publishTaskStatus(getTask(taskId)!, 'Merging into main...');
+  publishTaskStatus(getTask(taskId)!, 'Committing changes...');
 
   try {
     const workDir = task.worktreePath ?? repo.path;
     commit(workDir, task.title);
 
     if (task.branch) {
+      updateTask(taskId, { status: 'merging' });
+      syncRepoStatus(repo.id);
+      publishTaskStatus(getTask(taskId)!, 'Merging into main...');
+
       try {
         mergeIntoMain(repo.path, task.branch);
         broker.publish({ type: 'git.merge', repoId: repo.id, from: task.branch, into: getDefaultBranch(repo.path) });
@@ -701,7 +725,7 @@ export async function approveTask(taskId: string): Promise<void> {
           prompt: `There's a merge conflict when merging ${task.branch} into main. Error: ${errMsg}\n\nResolve all merge conflicts, commit the resolution, and ensure the code is working.`,
           sessionId: task.sessionId ?? undefined,
           onStatusUpdate: (status) => {
-            broker.publish({ type: 'task.status', taskId, status: 'working', message: status });
+            broker.publish({ type: 'task.status', taskId, status: 'merging', message: status });
           },
         });
 

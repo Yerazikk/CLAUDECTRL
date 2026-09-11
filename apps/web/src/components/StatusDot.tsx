@@ -3,6 +3,8 @@ import type { TaskStatus, RepoStatus } from '@claudectrl/shared';
 const colorMap: Record<string, string> = {
   working: '#D97757',
   validating: '#E8975A',
+  committing: '#E8975A',
+  merging: '#E8975A',
   queued: '#A0AEC0',
   ready_for_review: '#D97757',
   done: '#38B2AC',
@@ -23,7 +25,7 @@ interface Props {
 
 export function StatusDot({ status, size = 6, pulse }: Props) {
   const color = colorMap[status] ?? '#C8CDD6';
-  const shouldPulse = pulse && (status === 'working' || status === 'validating' || status === 'queued');
+  const shouldPulse = pulse && (status === 'working' || status === 'validating' || status === 'queued' || status === 'committing' || status === 'merging');
   return (
     <span
       style={{
