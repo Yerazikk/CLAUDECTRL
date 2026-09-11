@@ -1,5 +1,7 @@
 import { useState, useEffect } from 'react';
 import { api } from '../utils/api';
+import { useSpeechToText } from '../hooks/useSpeechToText';
+import { MicToggleButton } from '../components/MicToggleButton';
 
 interface GithubRepo {
   owner: string;
@@ -23,6 +25,19 @@ export function AddProject({ onDone }: Props) {
   const [search, setSearch] = useState('');
   const [searchFocused, setSearchFocused] = useState(false);
   const [pathFocused, setPathFocused] = useState(false);
+
+  const { isListening: searchListening, toggle: toggleSearchListening, hasSupport: hasSpeechSupport } = useSpeechToText((finalizedText) => {
+    setSearch((prev) => {
+      const trimmedPrev = prev.replace(/\s+$/, '');
+      return trimmedPrev ? `${trimmedPrev} ${finalizedText}` : finalizedText;
+    });
+  });
+  const { isListening: pathListening, toggle: togglePathListening } = useSpeechToText((finalizedText) => {
+    setLocalPath((prev) => {
+      const trimmedPrev = prev.replace(/\s+$/, '');
+      return trimmedPrev ? `${trimmedPrev} ${finalizedText}` : finalizedText;
+    });
+  });
 
   useEffect(() => {
     if (tab === 'github') {
@@ -186,9 +201,12 @@ export function AddProject({ onDone }: Props) {
               onChange={(e) => setSearch(e.target.value)}
               onFocus={() => setSearchFocused(true)}
               onBlur={() => setSearchFocused(false)}
-              placeholder="Search repositories..."
+              placeholder={searchListening ? 'Listening...' : 'Search repositories...'}
               style={{ flex: 1, fontSize: 14, color: 'var(--c-fg)', background: 'transparent' }}
             />
+            {hasSpeechSupport && (
+              <MicToggleButton isListening={searchListening} onToggle={toggleSearchListening} size={26} />
+            )}
           </div>
 
           {loading ? (
@@ -348,7 +366,7 @@ export function AddProject({ onDone }: Props) {
                 onChange={(e) => setLocalPath(e.target.value)}
                 onFocus={() => setPathFocused(true)}
                 onBlur={() => setPathFocused(false)}
-                placeholder="C:/Users/me/GitHub/my-project"
+                placeholder={pathListening ? 'Listening...' : 'C:/Users/me/GitHub/my-project'}
                 style={{
                   flex: 1,
                   fontSize: 13,
@@ -358,6 +376,9 @@ export function AddProject({ onDone }: Props) {
                 }}
                 onKeyDown={(e) => e.key === 'Enter' && handleRegisterLocal()}
               />
+              {hasSpeechSupport && (
+                <MicToggleButton isListening={pathListening} onToggle={togglePathListening} size={26} />
+              )}
             </div>
 
             <button

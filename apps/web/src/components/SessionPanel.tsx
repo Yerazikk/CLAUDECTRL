@@ -4,6 +4,8 @@ import type { ParsedOutput } from '../utils/parseOutput';
 import { formatDuration } from '../utils/parseOutput';
 import { StatusDot } from './StatusDot';
 import { api } from '../utils/api';
+import { useSpeechToText } from '../hooks/useSpeechToText';
+import { MicToggleButton } from './MicToggleButton';
 
 const statusLabels: Record<Task['status'], string> = {
   queued: 'Queued',
@@ -45,6 +47,16 @@ export function SessionPanel({
   const [error, setError] = useState<string | null>(null);
   const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
   const [editValue, setEditValue] = useState('');
+
+  const { isListening, toggle: toggleListening, hasSupport: hasSpeechSupport } = useSpeechToText((finalizedText) => {
+    // Append below/after whatever is already typed — never overwrite it.
+    setInputValue((prev) => {
+      const trimmedPrev = prev.replace(/\s+$/, '');
+      const next = trimmedPrev ? `${trimmedPrev} ${finalizedText}` : finalizedText;
+      localStorage.setItem(inputKey, next);
+      return next;
+    });
+  });
 
   const isActive = ['working', 'validating', 'queued', 'committing', 'merging'].includes(task.status);
   const isPauseable = ['working', 'validating', 'queued'].includes(task.status);
@@ -401,13 +413,16 @@ export function SessionPanel({
             value={inputValue}
             onChange={(e) => { setInputValue(e.target.value); localStorage.setItem(inputKey, e.target.value); }}
             onKeyDown={(e) => { if (e.key === 'Enter') handleSend(); }}
-            placeholder={inputPlaceholder}
+            placeholder={isListening ? 'Listening...' : inputPlaceholder}
             style={{
               flex: 1, fontSize: 12, padding: '7px 12px',
               borderRadius: 'var(--r-full)', boxShadow: 'var(--shadow-inset-sm)',
               background: 'var(--c-bg)', color: 'var(--c-fg)',
             }}
           />
+          {hasSpeechSupport && (
+            <MicToggleButton isListening={isListening} onToggle={toggleListening} size={30} />
+          )}
           <button
             onClick={handleSend}
             disabled={!inputValue.trim()}

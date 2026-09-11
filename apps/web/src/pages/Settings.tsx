@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react';
 import { api } from '../utils/api';
 import type { UsageSnapshot } from '@claudectrl/shared';
+import { useSpeechToText } from '../hooks/useSpeechToText';
+import { MicToggleButton } from '../components/MicToggleButton';
 
 interface HealthCheck {
   status: string;
@@ -28,6 +30,15 @@ export function Settings({ onBack }: Props) {
   const [promptSaving, setPromptSaving] = useState(false);
   const [promptSaved, setPromptSaved] = useState(false);
   const [promptDirty, setPromptDirty] = useState(false);
+
+  const { isListening: promptListening, toggle: togglePromptListening, hasSupport: hasSpeechSupport } = useSpeechToText((finalizedText) => {
+    setPromptContent((prev) => {
+      const trimmedPrev = prev.replace(/\s+$/, '');
+      return trimmedPrev ? `${trimmedPrev}\n${finalizedText}` : finalizedText;
+    });
+    setPromptDirty(true);
+    setPromptSaved(false);
+  });
 
   useEffect(() => {
     api.settings.health()
@@ -232,6 +243,9 @@ export function Settings({ onBack }: Props) {
           }}
         />
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 12 }}>
+          {hasSpeechSupport && (
+            <MicToggleButton isListening={promptListening} onToggle={togglePromptListening} size={30} />
+          )}
           <button
             onClick={handlePromptSave}
             disabled={!promptDirty || promptSaving}

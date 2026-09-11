@@ -1,5 +1,7 @@
 import { useState } from 'react';
 import type { Repository, Task } from '@claudectrl/shared';
+import { useSpeechToText } from '../hooks/useSpeechToText';
+import { MicToggleButton } from '../components/MicToggleButton';
 
 
 interface Props {
@@ -35,6 +37,13 @@ function relativeTime(iso: string | null): string {
 export function Dashboard({ repos, tasks, onSelectRepo, onAddRepo }: Props) {
   const [search, setSearch] = useState('');
   const [isFocused, setIsFocused] = useState(false);
+
+  const { isListening, toggle: toggleListening, hasSupport: hasSpeechSupport } = useSpeechToText((finalizedText) => {
+    setSearch((prev) => {
+      const trimmedPrev = prev.replace(/\s+$/, '');
+      return trimmedPrev ? `${trimmedPrev} ${finalizedText}` : finalizedText;
+    });
+  });
 
   const activeTask = (repoId: string) =>
     tasks.find((t) => t.repoId === repoId && ['working', 'validating', 'queued'].includes(t.status));
@@ -93,7 +102,7 @@ export function Dashboard({ repos, tasks, onSelectRepo, onAddRepo }: Props) {
             onChange={(e) => setSearch(e.target.value)}
             onFocus={() => setIsFocused(true)}
             onBlur={() => setIsFocused(false)}
-            placeholder="Search projects..."
+            placeholder={isListening ? 'Listening...' : 'Search projects...'}
             style={{
               flex: 1,
               fontSize: 14,
@@ -110,6 +119,9 @@ export function Dashboard({ repos, tasks, onSelectRepo, onAddRepo }: Props) {
             >
               ×
             </button>
+          )}
+          {hasSpeechSupport && (
+            <MicToggleButton isListening={isListening} onToggle={toggleListening} size={26} />
           )}
         </div>
       </div>
