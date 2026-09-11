@@ -65,11 +65,14 @@ const ConfigSchema = z.object({
 
 export type AppConfig = z.infer<typeof ConfigSchema>;
 
+// Resolve from __dirname so it works regardless of CWD (npm workspace runs from apps/server)
+const MONOREPO_CONFIG = path.resolve(__dirname, '../../../../config/default.yml');
+
 let config: AppConfig | null = null;
 let configPath = '';
 
 export function loadConfig(cfgPath?: string): AppConfig {
-  const resolvedPath = cfgPath ?? path.resolve(process.cwd(), 'config', 'default.yml');
+  const resolvedPath = cfgPath ?? MONOREPO_CONFIG;
   configPath = resolvedPath;
 
   let raw: Record<string, unknown> = {};
@@ -84,6 +87,7 @@ export function loadConfig(cfgPath?: string): AppConfig {
   }
 
   config = result.data;
+  console.debug(`[config] loaded from ${resolvedPath} — repos.directory=${result.data.repos.directory || '(empty)'}`);
 
   // Allow env overrides
   if (process.env.REPOS_DIRECTORY) config.repos.directory = process.env.REPOS_DIRECTORY;
@@ -105,7 +109,7 @@ export function getConfig(): AppConfig {
 
 export function reloadConfig(): AppConfig {
   config = null;
-  return loadConfig(configPath);
+  return loadConfig(configPath || undefined);
 }
 
 export interface RepoConfig {

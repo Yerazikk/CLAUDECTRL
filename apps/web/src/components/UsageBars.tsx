@@ -7,9 +7,9 @@ function formatRemaining(resetAt: string | null, used: number, limit: number): s
       const h = Math.floor(ms / 3600000);
       const m = Math.floor((ms % 3600000) / 60000);
       const d = Math.floor(h / 24);
-      if (d > 0) return `${d}d remaining`;
-      if (h > 0) return `${h}h remaining`;
-      return `${m}m remaining`;
+      if (d > 0) return `${d}d left`;
+      if (h > 0) return `${h}h left`;
+      return `${m}m left`;
     }
     return 'resetting soon';
   }
@@ -36,35 +36,49 @@ export function UsageBars({ usage }: Props) {
   if (!hourlyLabel && !weeklyLabel) return null;
 
   return (
-    <div style={{ padding: '12px 20px 16px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+    <div style={{
+      padding: '10px 20px 14px',
+      display: 'flex',
+      flexDirection: 'column',
+      gap: 8,
+      borderTop: '1px solid rgba(163,177,198,0.2)',
+    }}>
       {hourlyLabel && (
-        <UsageBar pct={hourlyPct} label={hourlyLabel} />
+        <UsageBar pct={hourlyPct} label={`Hourly · ${hourlyLabel}`} />
       )}
       {weeklyLabel && (
-        <UsageBar pct={weeklyPct} label={weeklyLabel} />
+        <UsageBar pct={weeklyPct} label={`Weekly · ${weeklyLabel}`} />
       )}
     </div>
   );
 }
 
 function UsageBar({ pct, label }: { pct: number; label: string }) {
+  const pctNum = Math.round(pct * 100);
+  const color = pctNum > 85 ? 'var(--c-failed)' : pctNum > 60 ? 'var(--c-warning)' : 'var(--c-accent)';
+
   return (
-    <div>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
       <div style={{
-        height: 2,
-        background: '#f0f0f0',
-        borderRadius: 1,
+        flex: 1,
+        height: 6,
+        borderRadius: 'var(--r-full)',
+        boxShadow: 'var(--shadow-inset-sm)',
+        background: 'var(--c-bg)',
         overflow: 'hidden',
-        marginBottom: 4,
       }}>
         <div style={{
           height: '100%',
-          width: `${Math.round(pct * 100)}%`,
-          background: '#0a0a0a',
-          transition: 'width 0.5s ease',
+          width: `${pctNum}%`,
+          background: color,
+          borderRadius: 'var(--r-full)',
+          transition: 'width 0.5s ease, background 0.3s ease',
+          boxShadow: `2px 0 8px rgba(var(--c-accent-rgb),0.3)`,
         }} />
       </div>
-      <div style={{ fontSize: 11, color: '#999', lineHeight: 1 }}>{label}</div>
+      <div style={{ fontSize: 11, color: 'var(--c-subtle)', whiteSpace: 'nowrap', minWidth: 80, textAlign: 'right' }}>
+        {label}
+      </div>
     </div>
   );
 }

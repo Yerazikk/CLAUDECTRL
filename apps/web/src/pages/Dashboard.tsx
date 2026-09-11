@@ -1,6 +1,6 @@
-import { useState, useMemo } from 'react';
+import { useState } from 'react';
 import type { Repository, Task } from '@claudectrl/shared';
-import { StatusDot } from '../components/StatusDot';
+
 
 interface Props {
   repos: Repository[];
@@ -14,7 +14,7 @@ function statusLabel(repo: Repository): string {
   switch (repo.status) {
     case 'working': return 'Working';
     case 'validating': return 'Validating';
-    case 'ready_for_review': return 'Ready for review';
+    case 'ready_for_review': return 'Review';
     case 'idle': return repo.lastActivityAt ? 'Idle' : '';
     default: return '';
   }
@@ -34,6 +34,7 @@ function relativeTime(iso: string | null): string {
 
 export function Dashboard({ repos, tasks, onSelectRepo, onAddRepo }: Props) {
   const [search, setSearch] = useState('');
+  const [isFocused, setIsFocused] = useState(false);
 
   const activeTask = (repoId: string) =>
     tasks.find((t) => t.repoId === repoId && ['working', 'validating', 'queued'].includes(t.status));
@@ -52,44 +53,81 @@ export function Dashboard({ repos, tasks, onSelectRepo, onAddRepo }: Props) {
     : null;
 
   return (
-    <div style={{ maxWidth: 560, margin: '0 auto', padding: '40px 20px' }}>
-      <h1 style={{ fontSize: 17, fontWeight: 600, letterSpacing: -0.3, marginBottom: 32 }}>
-        CLAUDECTRL
-      </h1>
+    <div style={{ maxWidth: 580, margin: '0 auto', padding: '32px 20px 40px' }}>
+      {/* Header */}
+      <div style={{ marginBottom: 28 }}>
+        <h1 style={{
+          fontFamily: 'var(--font-display)',
+          fontSize: 22,
+          fontWeight: 800,
+          color: 'var(--c-fg)',
+          letterSpacing: -0.5,
+          marginBottom: 2,
+        }}>
+          Projects
+        </h1>
+        <p style={{ fontSize: 13, color: 'var(--c-muted)' }}>
+          {repos.length} {repos.length === 1 ? 'project' : 'projects'} registered
+        </p>
+      </div>
 
       {/* Search */}
-      <div style={{ marginBottom: 32 }}>
-        <input
-          type="search"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="Select a project"
-          style={{
-            width: '100%',
-            fontSize: 15,
-            padding: '8px 0',
-            borderBottom: '1px solid var(--c-border)',
-            color: search ? 'var(--c-fg)' : 'var(--c-muted)',
-          }}
-          aria-label="Search projects"
-        />
+      <div style={{ marginBottom: 28 }}>
+        <div style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 10,
+          padding: '10px 16px',
+          borderRadius: 'var(--r-xl)',
+          boxShadow: isFocused ? 'var(--shadow-inset-deep)' : 'var(--shadow-inset)',
+          background: 'var(--c-bg)',
+          transition: 'box-shadow 0.3s ease-out',
+        }}>
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="var(--c-subtle)" strokeWidth="1.5" strokeLinecap="round">
+            <circle cx="6" cy="6" r="4.5"/>
+            <path d="M9.5 9.5L13 13"/>
+          </svg>
+          <input
+            type="search"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            onFocus={() => setIsFocused(true)}
+            onBlur={() => setIsFocused(false)}
+            placeholder="Search projects..."
+            style={{
+              flex: 1,
+              fontSize: 14,
+              color: 'var(--c-fg)',
+              background: 'transparent',
+            }}
+            aria-label="Search projects"
+          />
+          {search && (
+            <button
+              onClick={() => setSearch('')}
+              style={{ color: 'var(--c-subtle)', fontSize: 16, lineHeight: 1, padding: 2 }}
+            >
+              ×
+            </button>
+          )}
+        </div>
       </div>
 
       {filtered ? (
         <Section title="">
           {filtered.length === 0 && (
-            <p style={{ color: 'var(--c-muted)', fontSize: 14 }}>No projects found</p>
+            <p style={{ fontSize: 14, color: 'var(--c-muted)', padding: '12px 0' }}>No projects found</p>
           )}
           {filtered.map((r) => (
-            <RepoRow key={r.id} repo={r} task={activeTask(r.id) ?? readyTask(r.id)} onClick={() => onSelectRepo(r.id)} />
+            <RepoCard key={r.id} repo={r} task={activeTask(r.id) ?? readyTask(r.id)} onClick={() => onSelectRepo(r.id)} />
           ))}
         </Section>
       ) : (
         <>
           {continueRepos.length > 0 && (
-            <Section title="Continue">
+            <Section title="In progress">
               {continueRepos.map((r) => (
-                <RepoRow key={r.id} repo={r} task={activeTask(r.id)} onClick={() => onSelectRepo(r.id)} />
+                <RepoCard key={r.id} repo={r} task={activeTask(r.id)} onClick={() => onSelectRepo(r.id)} />
               ))}
             </Section>
           )}
@@ -97,7 +135,7 @@ export function Dashboard({ repos, tasks, onSelectRepo, onAddRepo }: Props) {
           {reviewRepos.length > 0 && (
             <Section title="Ready for review">
               {reviewRepos.map((r) => (
-                <RepoRow key={r.id} repo={r} task={readyTask(r.id)} onClick={() => onSelectRepo(r.id)} />
+                <RepoCard key={r.id} repo={r} task={readyTask(r.id)} onClick={() => onSelectRepo(r.id)} />
               ))}
             </Section>
           )}
@@ -105,26 +143,55 @@ export function Dashboard({ repos, tasks, onSelectRepo, onAddRepo }: Props) {
           {(continueRepos.length > 0 || reviewRepos.length > 0) && recentRepos.length > 0 && (
             <Section title="Recent">
               {recentRepos.slice(0, 5).map((r) => (
-                <RepoRow key={r.id} repo={r} onClick={() => onSelectRepo(r.id)} />
+                <RepoCard key={r.id} repo={r} onClick={() => onSelectRepo(r.id)} />
               ))}
             </Section>
           )}
 
           {continueRepos.length === 0 && reviewRepos.length === 0 && (
-            <Section title="Projects">
+            <Section title="All projects">
               {repos.length === 0 ? (
-                <p style={{ color: 'var(--c-muted)', fontSize: 14 }}>
-                  No projects yet.{' '}
+                <div style={{
+                  padding: '32px 24px',
+                  borderRadius: 'var(--r-xl)',
+                  boxShadow: 'var(--shadow-raised)',
+                  background: 'var(--c-bg)',
+                  textAlign: 'center',
+                }}>
+                  <div style={{ fontSize: 32, marginBottom: 12 }}>🚀</div>
+                  <p style={{ fontSize: 15, fontWeight: 600, color: 'var(--c-fg)', marginBottom: 6 }}>
+                    No projects yet
+                  </p>
+                  <p style={{ fontSize: 13, color: 'var(--c-muted)', marginBottom: 20 }}>
+                    Add a GitHub repo or local folder to get started.
+                  </p>
                   <button
                     onClick={onAddRepo}
-                    style={{ color: 'var(--c-fg)', textDecoration: 'underline' }}
+                    style={{
+                      fontSize: 14,
+                      fontWeight: 600,
+                      padding: '10px 24px',
+                      borderRadius: 'var(--r-full)',
+                      background: 'var(--c-accent)',
+                      color: '#fff',
+                      boxShadow: '4px 4px 12px rgb(163 177 198 / 0.5), -2px -2px 8px rgba(255,255,255,0.4)',
+                      transition: 'transform 0.3s ease-out, box-shadow 0.3s ease-out',
+                    }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.transform = 'translateY(-1px)';
+                      e.currentTarget.style.boxShadow = '6px 6px 16px rgb(163 177 198 / 0.6), -3px -3px 10px rgba(255,255,255,0.5)';
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.transform = '';
+                      e.currentTarget.style.boxShadow = '4px 4px 12px rgb(163 177 198 / 0.5), -2px -2px 8px rgba(255,255,255,0.4)';
+                    }}
                   >
-                    Add a project
+                    Add your first project
                   </button>
-                </p>
+                </div>
               ) : (
                 repos.map((r) => (
-                  <RepoRow key={r.id} repo={r} task={activeTask(r.id) ?? readyTask(r.id)} onClick={() => onSelectRepo(r.id)} />
+                  <RepoCard key={r.id} repo={r} task={activeTask(r.id) ?? readyTask(r.id)} onClick={() => onSelectRepo(r.id)} />
                 ))
               )}
             </Section>
@@ -132,19 +199,44 @@ export function Dashboard({ repos, tasks, onSelectRepo, onAddRepo }: Props) {
         </>
       )}
 
-      <div style={{ marginTop: 24 }}>
+      {/* Add project button */}
+      <div style={{ marginTop: 20 }}>
         <button
           onClick={onAddRepo}
           style={{
-            fontSize: 13,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+            fontSize: 14,
+            fontWeight: 500,
             color: 'var(--c-muted)',
-            padding: '6px 0',
-            borderBottom: '1px solid transparent',
+            padding: '10px 18px',
+            borderRadius: 'var(--r-full)',
+            boxShadow: 'var(--shadow-raised-sm)',
+            background: 'var(--c-bg)',
+            transition: 'transform 0.3s ease-out, box-shadow 0.3s ease-out, color 0.2s ease-out',
           }}
-          onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--c-fg)')}
-          onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--c-muted)')}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.transform = 'translateY(-1px)';
+            e.currentTarget.style.boxShadow = 'var(--shadow-raised-hover)';
+            e.currentTarget.style.color = 'var(--c-accent)';
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.transform = '';
+            e.currentTarget.style.boxShadow = 'var(--shadow-raised-sm)';
+            e.currentTarget.style.color = 'var(--c-muted)';
+          }}
+          onMouseDown={(e) => {
+            e.currentTarget.style.transform = 'translateY(0.5px)';
+            e.currentTarget.style.boxShadow = 'var(--shadow-inset-sm)';
+          }}
+          onMouseUp={(e) => {
+            e.currentTarget.style.transform = 'translateY(-1px)';
+            e.currentTarget.style.boxShadow = 'var(--shadow-raised-hover)';
+          }}
         >
-          + Add project
+          <span style={{ fontSize: 18, lineHeight: 1 }}>+</span>
+          Add project
         </button>
       </div>
     </div>
@@ -153,50 +245,103 @@ export function Dashboard({ repos, tasks, onSelectRepo, onAddRepo }: Props) {
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <div style={{ marginBottom: 32 }}>
+    <div style={{ marginBottom: 28 }}>
       {title && (
-        <div style={{ fontSize: 11, fontWeight: 500, color: 'var(--c-subtle)', textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 12 }}>
+        <div style={{
+          fontSize: 11,
+          fontWeight: 600,
+          color: 'var(--c-subtle)',
+          textTransform: 'uppercase',
+          letterSpacing: 1,
+          marginBottom: 12,
+          paddingLeft: 4,
+        }}>
           {title}
         </div>
       )}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
         {children}
       </div>
     </div>
   );
 }
 
-function RepoRow({ repo, task, onClick }: { repo: Repository; task?: Task; onClick: () => void }) {
+function RepoCard({ repo, task, onClick }: { repo: Repository; task?: Task; onClick: () => void }) {
   return (
     <button
       onClick={onClick}
       style={{
         display: 'flex',
-        alignItems: 'baseline',
+        alignItems: 'center',
         justifyContent: 'space-between',
-        padding: '10px 0',
-        borderBottom: '1px solid var(--c-border-light)',
+        padding: '14px 20px',
+        borderRadius: 'var(--r-lg)',
+        boxShadow: 'var(--shadow-raised-sm)',
+        background: 'var(--c-bg)',
         width: '100%',
         textAlign: 'left',
         gap: 12,
-        transition: 'background 0.1s',
+        transition: 'transform 0.3s ease-out, box-shadow 0.3s ease-out',
+        cursor: 'pointer',
       }}
-      onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--c-hover)')}
-      onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+      onMouseEnter={(e) => {
+        e.currentTarget.style.transform = 'translateY(-1px)';
+        e.currentTarget.style.boxShadow = 'var(--shadow-raised-hover)';
+      }}
+      onMouseLeave={(e) => {
+        e.currentTarget.style.transform = '';
+        e.currentTarget.style.boxShadow = 'var(--shadow-raised-sm)';
+      }}
+      onMouseDown={(e) => {
+        e.currentTarget.style.transform = 'translateY(0.5px)';
+        e.currentTarget.style.boxShadow = 'var(--shadow-inset-sm)';
+      }}
+      onMouseUp={(e) => {
+        e.currentTarget.style.transform = '';
+        e.currentTarget.style.boxShadow = 'var(--shadow-raised-sm)';
+      }}
     >
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
-          <StatusDot status={repo.status} size={5} pulse />
-          <span style={{ fontSize: 14, fontWeight: 500 }}>{repo.name}</span>
+      <div style={{ minWidth: 0, flex: 1 }}>
+        <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--c-fg)', marginBottom: 2 }}>
+          {repo.name}
         </div>
         {task?.title && (
-          <span style={{ fontSize: 12, color: 'var(--c-muted)', paddingLeft: 12 }}>
-            {task.title.slice(0, 60)}
-          </span>
+          <div style={{
+            fontSize: 12,
+            color: 'var(--c-muted)',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+          }}>
+            {task.title.slice(0, 65)}
+          </div>
         )}
       </div>
-      <div style={{ fontSize: 12, color: 'var(--c-subtle)', whiteSpace: 'nowrap', flexShrink: 0 }}>
-        {task ? statusLabel(repo) : (repo.lastActivityAt ? relativeTime(repo.lastActivityAt) : '')}
+
+      <div style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 6,
+        flexShrink: 0,
+      }}>
+        {task ? (
+          <span style={{
+            fontSize: 11,
+            fontWeight: 500,
+            color: repo.status === 'ready_for_review' ? 'var(--c-accent)' : 'var(--c-muted)',
+            padding: '3px 10px',
+            borderRadius: 'var(--r-full)',
+            boxShadow: repo.status === 'ready_for_review' ? 'var(--shadow-raised-xs)' : undefined,
+            background: 'var(--c-bg)',
+          }}>
+            {statusLabel(repo)}
+          </span>
+        ) : (
+          <span style={{ fontSize: 12, color: 'var(--c-subtle)' }}>
+            {repo.lastActivityAt ? relativeTime(repo.lastActivityAt) : ''}
+          </span>
+        )}
+        <span style={{ color: 'var(--c-subtle)', fontSize: 14 }}>›</span>
       </div>
     </button>
   );

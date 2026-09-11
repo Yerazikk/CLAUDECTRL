@@ -1,25 +1,15 @@
 import type { TaskStatus, RepoStatus } from '@claudectrl/shared';
 
-const styles: Record<string, React.CSSProperties> = {
-  dot: {
-    display: 'inline-block',
-    width: 6,
-    height: 6,
-    borderRadius: '50%',
-    flexShrink: 0,
-  },
-};
-
 const colorMap: Record<string, string> = {
-  working: '#0a0a0a',
-  validating: '#6b6b6b',
-  queued: '#999',
-  ready_for_review: '#0a0a0a',
-  done: '#bbb',
-  failed: '#c0392b',
-  stopped: '#bbb',
-  idle: '#ddd',
-  not_cloned: '#ddd',
+  working: '#D97757',
+  validating: '#E8975A',
+  queued: '#A0AEC0',
+  ready_for_review: '#D97757',
+  done: '#38B2AC',
+  failed: '#E05252',
+  stopped: '#A0AEC0',
+  idle: '#A0AEC0',
+  not_cloned: '#C8CDD6',
 };
 
 type StatusType = TaskStatus | RepoStatus;
@@ -31,26 +21,21 @@ interface Props {
 }
 
 export function StatusDot({ status, size = 6, pulse }: Props) {
-  const color = colorMap[status] ?? '#ddd';
+  const color = colorMap[status] ?? '#C8CDD6';
+  const shouldPulse = pulse && (status === 'working' || status === 'validating' || status === 'queued');
   return (
     <span
       style={{
-        ...styles.dot,
+        display: 'inline-block',
         width: size,
         height: size,
+        borderRadius: '50%',
         background: color,
-        animation: pulse && (status === 'working' || status === 'validating')
-          ? 'pulse 2s ease-in-out infinite'
-          : undefined,
+        flexShrink: 0,
+        boxShadow: shouldPulse ? `0 0 0 2px rgba(217,119,87,0.2)` : undefined,
+        animation: shouldPulse ? 'pulse 2s ease-in-out infinite' : undefined,
       }}
       aria-hidden="true"
     />
   );
-}
-
-// Inject keyframes once
-if (typeof document !== 'undefined') {
-  const style = document.createElement('style');
-  style.textContent = `@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }`;
-  document.head.appendChild(style);
 }

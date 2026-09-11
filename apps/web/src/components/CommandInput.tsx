@@ -1,6 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 
-// Web Speech API types
 interface SpeechRecognitionEvent extends Event {
   results: SpeechRecognitionResultList;
 }
@@ -37,12 +36,12 @@ export function CommandInput({ onSubmit, disabled, placeholder = 'Tell Claude wh
   const [value, setValue] = useState('');
   const [isListening, setIsListening] = useState(false);
   const [isLocked, setIsLocked] = useState(false);
+  const [isFocused, setIsFocused] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const recognitionRef = useRef<SpeechRecognitionInstance | null>(null);
   const micButtonRef = useRef<HTMLButtonElement>(null);
   const lockYRef = useRef<number | null>(null);
 
-  // Auto-resize textarea
   useEffect(() => {
     const ta = textareaRef.current;
     if (!ta) return;
@@ -65,11 +64,9 @@ export function CommandInput({ onSubmit, disabled, placeholder = 'Tell Claude wh
     if (textareaRef.current) textareaRef.current.style.height = 'auto';
   }, [value, disabled, onSubmit]);
 
-  // Voice recording
   const startListening = useCallback(() => {
     const w = window as unknown as { SpeechRecognition?: SpeechRecognitionConstructor; webkitSpeechRecognition?: SpeechRecognitionConstructor };
     const SpeechRecognition = w.SpeechRecognition ?? w.webkitSpeechRecognition;
-
     if (!SpeechRecognition) return;
 
     const recognition = new SpeechRecognition();
@@ -83,12 +80,11 @@ export function CommandInput({ onSubmit, disabled, placeholder = 'Tell Claude wh
       for (let i = 0; i < results.length; i++) {
         parts.push(results[i][0].transcript);
       }
-      const transcript = parts.join('');
-      setValue(transcript);
+      setValue(parts.join(''));
     };
 
     recognition.onend = () => {
-      if (isLocked) return; // will re-start if locked
+      if (isLocked) return;
       setIsListening(false);
       setIsLocked(false);
     };
@@ -109,33 +105,24 @@ export function CommandInput({ onSubmit, disabled, placeholder = 'Tell Claude wh
     setIsListening(false);
     setIsLocked(false);
     lockYRef.current = null;
-    // Focus textarea so user can review/edit
     setTimeout(() => textareaRef.current?.focus(), 50);
   }, []);
 
-  // Hold-to-record: pointer down starts, pointer up stops (unless locked)
   const handleMicPointerDown = useCallback((e: React.PointerEvent) => {
     if (!voiceEnabled) return;
     e.preventDefault();
     lockYRef.current = e.clientY;
-    if (isListening && isLocked) {
-      stopListening();
-      return;
-    }
+    if (isListening && isLocked) { stopListening(); return; }
     if (!isListening) startListening();
   }, [isListening, isLocked, voiceEnabled, startListening, stopListening]);
 
   const handleMicPointerMove = useCallback((e: React.PointerEvent) => {
     if (!isListening || isLocked || lockYRef.current === null) return;
-    const dy = lockYRef.current - e.clientY;
-    if (dy > 40) {
-      // Slide up to lock
-      setIsLocked(true);
-    }
+    if (lockYRef.current - e.clientY > 40) setIsLocked(true);
   }, [isListening, isLocked]);
 
   const handleMicPointerUp = useCallback(() => {
-    if (isLocked) return; // stay listening when locked
+    if (isLocked) return;
     if (isListening) stopListening();
   }, [isListening, isLocked, stopListening]);
 
@@ -144,98 +131,124 @@ export function CommandInput({ onSubmit, disabled, placeholder = 'Tell Claude wh
     (window as unknown as Record<string, unknown>).webkitSpeechRecognition
   );
 
+  const hasValue = value.trim().length > 0;
+
   return (
     <div style={{
-      display: 'flex',
-      alignItems: 'flex-end',
-      gap: 8,
-      padding: '12px 16px',
-      borderTop: '1px solid var(--c-border)',
+      padding: '12px 16px 16px',
       background: 'var(--c-bg)',
     }}>
-      <div style={{ flex: 1, position: 'relative' }}>
-        {isListening && (
-          <div style={{
-            position: 'absolute',
-            inset: 0,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            pointerEvents: 'none',
-            color: 'var(--c-muted)',
-            fontSize: 13,
-          }}>
-            {isLocked ? 'Tap mic to stop' : 'Listening...'}
-          </div>
-        )}
-        <textarea
-          ref={textareaRef}
-          value={value}
-          onChange={(e) => setValue(e.target.value)}
-          onKeyDown={handleKeyDown}
-          placeholder={isListening ? '' : placeholder}
-          disabled={disabled}
-          rows={1}
-          style={{
-            width: '100%',
-            resize: 'none',
-            minHeight: 36,
-            maxHeight: 200,
-            padding: '8px 0',
-            fontSize: 14,
-            lineHeight: 1.5,
-            color: isListening ? 'transparent' : 'inherit',
-          }}
-          aria-label="Command input"
-        />
-      </div>
+      <div style={{
+        display: 'flex',
+        alignItems: 'flex-end',
+        gap: 10,
+        padding: '10px 10px 10px 16px',
+        borderRadius: 'var(--r-xl)',
+        boxShadow: isFocused ? 'var(--shadow-inset-deep)' : 'var(--shadow-inset)',
+        background: 'var(--c-bg)',
+        transition: 'box-shadow 0.3s ease-out',
+      }}>
+        <div style={{ flex: 1, position: 'relative', minWidth: 0 }}>
+          {isListening && (
+            <div style={{
+              position: 'absolute',
+              inset: 0,
+              display: 'flex',
+              alignItems: 'center',
+              pointerEvents: 'none',
+              color: 'var(--c-muted)',
+              fontSize: 13,
+              fontStyle: 'italic',
+            }}>
+              {isLocked ? 'Tap mic to stop recording...' : 'Listening...'}
+            </div>
+          )}
+          <textarea
+            ref={textareaRef}
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            onKeyDown={handleKeyDown}
+            onFocus={() => setIsFocused(true)}
+            onBlur={() => setIsFocused(false)}
+            placeholder={isListening ? '' : placeholder}
+            disabled={disabled}
+            rows={1}
+            style={{
+              width: '100%',
+              resize: 'none',
+              minHeight: 36,
+              maxHeight: 200,
+              padding: '8px 0',
+              fontSize: 14,
+              lineHeight: 1.5,
+              color: isListening ? 'transparent' : 'var(--c-fg)',
+              background: 'transparent',
+              fontFamily: 'var(--font)',
+            }}
+            aria-label="Command input"
+          />
+        </div>
 
-      {voiceEnabled && hasSpeechAPI && (
+        {voiceEnabled && hasSpeechAPI && (
+          <button
+            ref={micButtonRef}
+            onPointerDown={handleMicPointerDown}
+            onPointerMove={handleMicPointerMove}
+            onPointerUp={handleMicPointerUp}
+            style={{
+              width: 40,
+              height: 40,
+              borderRadius: '50%',
+              background: isListening
+                ? (isLocked ? 'var(--c-accent)' : 'var(--c-accent-light)')
+                : 'var(--c-bg)',
+              color: isListening ? '#fff' : 'var(--c-subtle)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              flexShrink: 0,
+              boxShadow: isListening ? 'none' : 'var(--shadow-raised-xs)',
+              transition: 'background 0.3s ease-out, box-shadow 0.3s ease-out, color 0.3s ease-out',
+              touchAction: 'none',
+              userSelect: 'none',
+            }}
+            aria-label={isListening ? 'Stop recording' : 'Start voice input'}
+            title="Hold to record, slide up to lock"
+          >
+            <MicIcon size={15} />
+          </button>
+        )}
+
         <button
-          ref={micButtonRef}
-          onPointerDown={handleMicPointerDown}
-          onPointerMove={handleMicPointerMove}
-          onPointerUp={handleMicPointerUp}
+          onClick={handleSubmit}
+          disabled={disabled || !hasValue}
           style={{
-            width: 32,
-            height: 32,
+            width: 40,
+            height: 40,
             borderRadius: '50%',
-            background: isListening ? (isLocked ? '#0a0a0a' : '#333') : 'transparent',
-            color: isListening ? '#fff' : 'var(--c-subtle)',
+            background: hasValue && !disabled ? 'var(--c-accent)' : 'var(--c-bg)',
+            color: hasValue && !disabled ? '#fff' : 'var(--c-subtle)',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
             flexShrink: 0,
-            transition: 'background 0.15s, color 0.15s',
-            touchAction: 'none',
-            userSelect: 'none',
+            boxShadow: hasValue && !disabled
+              ? '4px 4px 10px rgb(163 177 198 / 0.5), -2px -2px 6px rgba(255,255,255,0.4)'
+              : 'var(--shadow-raised-xs)',
+            transition: 'background 0.3s ease-out, box-shadow 0.3s ease-out, color 0.3s ease-out, transform 0.15s ease-out',
+            cursor: hasValue && !disabled ? 'pointer' : 'default',
           }}
-          aria-label={isListening ? 'Stop recording' : 'Start voice input'}
-          title="Hold to record, slide up to lock"
+          onMouseEnter={(e) => {
+            if (hasValue && !disabled) e.currentTarget.style.transform = 'translateY(-1px)';
+          }}
+          onMouseLeave={(e) => { e.currentTarget.style.transform = ''; }}
+          onMouseDown={(e) => { e.currentTarget.style.transform = 'translateY(1px)'; }}
+          onMouseUp={(e) => { e.currentTarget.style.transform = ''; }}
+          aria-label="Send"
         >
-          <MicIcon size={14} />
+          <UpArrowIcon size={13} />
         </button>
-      )}
-
-      <button
-        onClick={handleSubmit}
-        disabled={disabled || !value.trim()}
-        style={{
-          width: 32,
-          height: 32,
-          borderRadius: '50%',
-          background: value.trim() && !disabled ? 'var(--c-fg)' : 'var(--c-border)',
-          color: value.trim() && !disabled ? '#fff' : 'var(--c-subtle)',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          flexShrink: 0,
-          transition: 'background 0.15s, color 0.15s',
-        }}
-        aria-label="Send"
-      >
-        <UpArrowIcon size={12} />
-      </button>
+      </div>
     </div>
   );
 }
@@ -253,7 +266,7 @@ function MicIcon({ size }: { size: number }) {
 
 function UpArrowIcon({ size }: { size: number }) {
   return (
-    <svg width={size} height={size} viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+    <svg width={size} height={size} viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <path d="M6 10V2M2 6l4-4 4 4"/>
     </svg>
   );

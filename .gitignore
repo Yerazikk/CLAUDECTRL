@@ -4,6 +4,10 @@ data/*.db
 data/*.log
 data/*.db-shm
 data/*.db-wal
+**/data/*.db
+**/data/*.log
+**/data/*.db-shm
+**/data/*.db-wal
 .env
 *.env.local
 apps/web/dist/
