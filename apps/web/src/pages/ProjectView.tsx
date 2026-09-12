@@ -16,7 +16,9 @@ interface Props {
 
 export function ProjectView({ repo, tasks, sessions, onBack, getTaskParsed }: Props) {
   const draftKey = `draft:${repo.id}`;
+  const modelKey = 'new-session-model';
   const [newTaskInput, setNewTaskInput] = useState(() => localStorage.getItem(draftKey) ?? '');
+  const [newTaskModel, setNewTaskModel] = useState(() => localStorage.getItem(modelKey) ?? 'default');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showArchived, setShowArchived] = useState(true);
@@ -161,7 +163,7 @@ export function ProjectView({ repo, tasks, sessions, onBack, getTaskParsed }: Pr
     setSubmitting(true);
     setError(null);
     try {
-      await api.repos.submitTask(repo.id, msg);
+      await api.repos.submitTask(repo.id, msg, undefined, newTaskModel);
       setNewTaskInput('');
       localStorage.removeItem(draftKey);
     } catch (e) {
@@ -258,6 +260,22 @@ export function ProjectView({ repo, tasks, sessions, onBack, getTaskParsed }: Pr
       {/* New session input */}
       <div style={{ padding: '12px 20px', flexShrink: 0 }}>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <select
+            value={newTaskModel}
+            onChange={(e) => { setNewTaskModel(e.target.value); localStorage.setItem(modelKey, e.target.value); }}
+            disabled={submitting}
+            title="Model for this session"
+            style={{
+              fontSize: 12, padding: '10px 10px', flexShrink: 0,
+              borderRadius: 'var(--r-xl)', boxShadow: 'var(--shadow-inset)',
+              background: 'var(--c-bg)', color: 'var(--c-fg)', fontFamily: 'var(--font)',
+            }}
+          >
+            <option value="default">Default</option>
+            <option value="opus">Opus</option>
+            <option value="sonnet">Sonnet</option>
+            <option value="haiku">Haiku</option>
+          </select>
           <input
             value={newTaskInput}
             onChange={(e) => { setNewTaskInput(e.target.value); localStorage.setItem(draftKey, e.target.value); }}

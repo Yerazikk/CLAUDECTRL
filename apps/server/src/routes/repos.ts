@@ -69,14 +69,14 @@ export async function reposRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // Submit task command (optionally within an existing session)
-  app.post<{ Params: { id: string }; Body: { message: string; sessionRef?: string } }>(
+  app.post<{ Params: { id: string }; Body: { message: string; sessionRef?: string; model?: string } }>(
     '/api/repos/:id/tasks',
     async (req, reply) => {
-      const { message, sessionRef } = req.body;
+      const { message, sessionRef, model } = req.body;
       if (!message?.trim()) return reply.status(400).send({ error: 'message required' });
       const repo = getRepo(req.params.id);
       if (!repo) return reply.status(404).send({ error: 'Not found' });
-      const task = await createTask(req.params.id, message.trim(), sessionRef);
+      const task = await createTask(req.params.id, message.trim(), sessionRef, model);
       return task;
     }
   );

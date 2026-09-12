@@ -150,6 +150,12 @@ export function runMigrations(db: Database.Database): void {
         ALTER TABLE tasks ADD COLUMN branch_slug TEXT;
       `,
     },
+    {
+      name: '004_task_model',
+      sql: `
+        ALTER TABLE tasks ADD COLUMN model TEXT;
+      `,
+    },
   ];
 
   const applied = new Set(

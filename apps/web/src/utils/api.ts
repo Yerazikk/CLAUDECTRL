@@ -36,8 +36,8 @@ export const api = {
     clone: (owner: string, repo: string) => api.post('/api/repos/clone', { owner, repo }),
     remove: (id: string) => api.delete(`/api/repos/${id}`),
     fetch: (id: string) => api.post(`/api/repos/${id}/fetch`),
-    submitTask: (id: string, message: string, sessionRef?: string) =>
-      api.post(`/api/repos/${id}/tasks`, { message, sessionRef }),
+    submitTask: (id: string, message: string, sessionRef?: string, model?: string) =>
+      api.post(`/api/repos/${id}/tasks`, { message, sessionRef, model }),
     feedback: (id: string, taskId: string, message: string) =>
       api.post(`/api/repos/${id}/tasks/${taskId}/feedback`, { message }),
     stopTask: (id: string, taskId: string) =>
