@@ -64,6 +64,7 @@ function dbRowToTask(row: Record<string, unknown>): Task {
     lastResult: row.last_result as string | null,
     commitMessage: row.commit_message as string | null,
     branchSlug: row.branch_slug as string | null,
+    model: row.model as string | null,
     archived: Boolean(row.archived),
     createdAt: row.created_at as string,
     updatedAt: row.updated_at as string,
@@ -302,7 +303,7 @@ export function recoverInterruptedTasks(): void {
  * If sessionRef is provided, the task joins that session's queue.
  * Otherwise, a new session + worktree is created.
  */
-export async function createTask(repoId: string, userMessage: string, sessionRef?: string): Promise<Task> {
+export async function createTask(repoId: string, userMessage: string, sessionRef?: string, model?: string): Promise<Task> {
   const db = getDb();
   const repo = getRepo(repoId);
   if (!repo) throw new Error(`Repository ${repoId} not found`);
@@ -311,9 +312,9 @@ export async function createTask(repoId: string, userMessage: string, sessionRef
   const title = userMessage;
 
   db.prepare(`
-    INSERT INTO tasks (id, repo_id, title, status, last_message, session_ref)
-    VALUES (?, ?, ?, 'queued', ?, ?)
-  `).run(taskId, repoId, title, userMessage, sessionRef ?? null);
+    INSERT INTO tasks (id, repo_id, title, status, last_message, session_ref, model)
+    VALUES (?, ?, ?, 'queued', ?, ?, ?)
+  `).run(taskId, repoId, title, userMessage, sessionRef ?? null, model ?? null);
 
   // Save user message
   db.prepare(`
@@ -509,6 +510,7 @@ async function runTask(task: Task, repo: Repository, userMessage: string, isResu
       workDir,
       prompt,
       sessionId: claudeSessionIdToResume,
+      model: updatedTask.model ?? undefined,
       onStatusUpdate: (status) => {
         broker.publish({ type: 'task.status', taskId: task.id, status: 'working', message: status });
       },
@@ -635,6 +637,7 @@ async function runValidation(taskId: string, repo: Repository, workDir: string, 
         workDir,
         prompt: fixPrompt,
         sessionId: currentTask.sessionId ?? undefined,
+        model: currentTask.model ?? undefined,
         onStatusUpdate: (status) => {
           broker.publish({ type: 'task.status', taskId, status: 'working', message: status });
         },
@@ -728,7 +731,7 @@ export async function retryTask(taskId: string): Promise<Task> {
   const message = task.lastMessage ?? task.title;
   if (!message) throw new Error('No original message to retry with');
 
-  return createTask(task.repoId, message);
+  return createTask(task.repoId, message, undefined, task.model ?? undefined);
 }
 
 async function markReadyForReview(taskId: string, repo: Repository): Promise<void> {
@@ -812,6 +815,7 @@ export async function approveTask(taskId: string): Promise<void> {
           workDir: repo.path,
           prompt: `There's a merge conflict when merging ${branch} into main. Error: ${errMsg}\n\nResolve all merge conflicts, commit the resolution, and ensure the code is working.`,
           sessionId: task.sessionId ?? undefined,
+          model: task.model ?? undefined,
           onStatusUpdate: (status) => {
             broker.publish({ type: 'task.status', taskId, status: 'resolving_conflict', message: status });
           },

@@ -19,6 +19,7 @@ export interface ClaudeRunOptions {
   workDir: string;
   prompt: string;
   sessionId?: string; // Claude Code session ID to resume
+  model?: string; // Claude model alias/name (e.g. 'opus', 'sonnet', 'haiku')
   onStatusUpdate?: (status: string) => void;
   onSessionId?: (sessionId: string) => void;
   onOutput?: (line: string) => void;
@@ -60,7 +61,7 @@ function extractText(content: ClaudeStreamEvent['message']): string {
 }
 
 export async function runClaude(opts: ClaudeRunOptions): Promise<ClaudeRunResult> {
-  const { taskId, workDir, prompt, sessionId, onStatusUpdate, onSessionId, onOutput, signal } = opts;
+  const { taskId, workDir, prompt, sessionId, model, onStatusUpdate, onSessionId, onOutput, signal } = opts;
 
   const args = [
     '--dangerously-skip-permissions',
@@ -71,6 +72,10 @@ export async function runClaude(opts: ClaudeRunOptions): Promise<ClaudeRunResult
 
   if (sessionId) {
     args.push('--resume', sessionId);
+  }
+
+  if (model && model !== 'default') {
+    args.push('--model', model);
   }
 
   // Prompt is written to stdin to avoid Windows cmd.exe mangling of

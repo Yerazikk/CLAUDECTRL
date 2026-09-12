@@ -17,6 +17,8 @@ export type TaskStatus =
 
 export type SessionStatus = 'active' | 'idle' | 'stopped';
 
+export type ClaudeModel = 'default' | 'opus' | 'sonnet' | 'haiku';
+
 export interface Repository {
   id: string;
   name: string;
@@ -44,6 +46,7 @@ export interface Task {
   lastResult: string | null;
   commitMessage: string | null;
   branchSlug: string | null;
+  model: string | null;
   archived: boolean;
   createdAt: string;
   updatedAt: string;
