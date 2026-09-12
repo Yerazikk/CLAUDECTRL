@@ -91,6 +91,15 @@ export function SessionPanel({
     }
   };
 
+  const handleRetry = async () => {
+    const msg = 'retry or continue';
+    // Track immediately so the bubble appears right away, same as a typed message
+    const next = [...sentMessages, msg];
+    setSentMessages(next);
+    localStorage.setItem(sentMsgKey, JSON.stringify(next));
+    await handleAction(() => api.repos.retryTask(repoId, task.id));
+  };
+
   const handleEditTask = async (taskId: string) => {
     const msg = editValue.trim();
     if (!msg) return;
@@ -189,7 +198,7 @@ export function SessionPanel({
             <ActionBtn label={'\u25B6'} title="Resume" onClick={() => handleAction(() => api.repos.resumeTask(repoId, task.id))} accent />
           )}
           {(isFailed || isPausedOrStopped) && (
-            <ActionBtn label={'\u21BA'} title="Retry" onClick={() => handleAction(() => api.repos.retryTask(repoId, task.id))} />
+            <ActionBtn label={'\u21BA'} title="Retry" onClick={handleRetry} />
           )}
           {(isDone || isFailed || isPausedOrStopped) && (
             <ActionBtn label={'\uD83D\uDCE6'} title="Archive" onClick={() => handleAction(() => api.repos.archiveTask(repoId, task.id))} />
