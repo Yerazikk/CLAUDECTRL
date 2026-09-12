@@ -57,6 +57,8 @@ export function updateParsedOutput(parsed: ParsedOutput, line: string): ParsedOu
           if (!text) continue;
           const paragraphs = text.split(/\n\n+/).filter(
             (p: string) => p.trim() && !p.trim().startsWith('```')
+              // COMMIT:/BRANCH: metadata lines are for the server, not the user
+              && !/^(COMMIT|BRANCH):/im.test(p.trim())
           );
           if (paragraphs.length > 0) {
             turn.summary = paragraphs[paragraphs.length - 1].trim();

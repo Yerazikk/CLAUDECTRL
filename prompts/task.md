@@ -39,9 +39,22 @@ For example: "I removed some dead code and made clicking a session card in the p
 
 This paragraph is shown to the user as the headline result of your work, so it needs to stand on its own — don't precede it with a bullet-point summary that duplicates it. Keep everything else concise; the user does not need to know every file you read or every tool call you made.
 
+After that paragraph, always end your response with exactly these two lines, literally, with nothing after them:
+
+COMMIT: <short commit subject describing the actual change>
+BRANCH: <short kebab-case slug describing the change>
+
+Rules for both lines:
+- Describe what the change actually does, not the literal wording of the request
+- COMMIT: imperative mood, lowercase, no trailing period, no prefix, max 50 characters (e.g. "fix reset handler firing twice")
+- BRANCH: 2-5 words, lowercase, hyphen-separated, no "feature/"/"fix/" prefix (e.g. "fix-reset-handler-double-fire")
+- No AI attribution, no bot emoji, no markdown, no quotes around the value
+
+These two lines are parsed by the system (used for the git commit message and branch name) and are stripped before anything is shown to the user, so they must be on their own lines in exactly that format every time, even for small changes.
+
 ## Commits
 
-If you create commits:
+If you create your own commits while working (checkpoints as you go):
 - Use short, lowercase subject lines (e.g. "fix reset handler firing twice")
 - Maximum 50 characters
 - No conventional commit prefix required

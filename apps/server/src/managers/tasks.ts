@@ -18,6 +18,7 @@ import {
   mergeIntoMain,
   pushMain,
   commit,
+  renameBranch,
 } from './git';
 import type { Task, Repository, Session } from '@claudectrl/shared';
 
@@ -61,6 +62,8 @@ function dbRowToTask(row: Record<string, unknown>): Task {
     sessionRef: row.session_ref as string | null,
     lastMessage: row.last_message as string | null,
     lastResult: row.last_result as string | null,
+    commitMessage: row.commit_message as string | null,
+    branchSlug: row.branch_slug as string | null,
     archived: Boolean(row.archived),
     createdAt: row.created_at as string,
     updatedAt: row.updated_at as string,
@@ -156,6 +159,8 @@ function updateTask(taskId: string, updates: Partial<Task>): Task {
   if (updates.sessionRef !== undefined) { fields.push('session_ref = ?'); values.push(updates.sessionRef); }
   if (updates.lastMessage !== undefined) { fields.push('last_message = ?'); values.push(updates.lastMessage); }
   if (updates.lastResult !== undefined) { fields.push('last_result = ?'); values.push(updates.lastResult); }
+  if (updates.commitMessage !== undefined) { fields.push('commit_message = ?'); values.push(updates.commitMessage); }
+  if (updates.branchSlug !== undefined) { fields.push('branch_slug = ?'); values.push(updates.branchSlug); }
   if (updates.startedAt !== undefined) { fields.push('started_at = ?'); values.push(updates.startedAt); }
   if (updates.completedAt !== undefined) { fields.push('completed_at = ?'); values.push(updates.completedAt); }
   if (updates.archived !== undefined) { fields.push('archived = ?'); values.push(updates.archived ? 1 : 0); }
@@ -215,6 +220,31 @@ function syncRepoStatus(repoId: string): void {
 function publishTaskStatus(task: Task, message?: string): void {
   broker.publish({ type: 'task.status', taskId: task.id, status: task.status, message });
   syncRepoStatus(task.repoId);
+}
+
+/**
+ * Pull the trailing `COMMIT:` / `BRANCH:` metadata lines that the task prompt
+ * asks Claude to append, and strip them out of the text shown to the user.
+ */
+function extractCommitMetadata(text: string): { commitMessage: string | null; branchSlug: string | null; cleaned: string } {
+  const commitMatch = text.match(/^COMMIT:\s*(.+)$/im);
+  const branchMatch = text.match(/^BRANCH:\s*(.+)$/im);
+
+  const cleaned = text
+    .replace(/^COMMIT:\s*.+$/im, '')
+    .replace(/^BRANCH:\s*.+$/im, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+
+  const commitMessage = commitMatch
+    ? commitMatch[1].trim().replace(/^["'`]|["'`]$/g, '').slice(0, 72)
+    : null;
+
+  const branchSlug = branchMatch
+    ? branchMatch[1].trim().toLowerCase().replace(/[^a-z0-9\s-]/g, '').trim().replace(/\s+/g, '-').slice(0, 40)
+    : null;
+
+  return { commitMessage: commitMessage || null, branchSlug: branchSlug || null, cleaned };
 }
 
 function loadPrompt(promptPath: string): string {
@@ -501,14 +531,22 @@ async function runTask(task: Task, repo: Repository, userMessage: string, isResu
       }
     }
 
-    // Save assistant response
+    // Save assistant response — pull out the COMMIT:/BRANCH: metadata the
+    // prompt asks for so it doesn't show up in the text shown to the user
     if (result.resultText) {
+      const { commitMessage, branchSlug, cleaned } = extractCommitMetadata(result.resultText);
+      const displayText = cleaned || result.resultText;
+
       db.prepare(`
         INSERT INTO messages (id, task_id, role, content)
         VALUES (?, ?, 'assistant', ?)
-      `).run(newId(), task.id, result.resultText);
+      `).run(newId(), task.id, displayText);
 
-      updateTask(task.id, { lastResult: result.resultText.slice(0, 500) });
+      updateTask(task.id, {
+        lastResult: displayText.slice(0, 500),
+        ...(commitMessage ? { commitMessage } : {}),
+        ...(branchSlug ? { branchSlug } : {}),
+      });
     }
 
     if (!result.success) {
@@ -730,18 +768,37 @@ export async function approveTask(taskId: string): Promise<void> {
   syncRepoStatus(repo.id);
   publishTaskStatus(getTask(taskId)!, 'Committing changes...');
 
+  // Prefer the branch name Claude suggested (keeping the existing type prefix)
+  // over the slug-of-the-first-message name it was created with
+  let branch = task.branch;
+  if (branch && task.branchSlug) {
+    const prefix = branch.match(/^([a-z]+\/)/)?.[1] ?? '';
+    const renamed = `${prefix}${task.branchSlug}`;
+    if (renamed !== branch) {
+      try {
+        renameBranch(task.worktreePath ?? repo.path, branch, renamed);
+        updateTask(taskId, { branch: renamed });
+        if (task.sessionRef) updateSession(task.sessionRef, { branch: renamed });
+        getDb().prepare('UPDATE worktrees SET branch = ? WHERE task_id = ?').run(renamed, taskId);
+        branch = renamed;
+      } catch (e) {
+        logger.warn(`Branch rename failed for task ${taskId}`, e);
+      }
+    }
+  }
+
   try {
     const workDir = task.worktreePath ?? repo.path;
-    commit(workDir, task.title);
+    commit(workDir, task.commitMessage ?? task.title);
 
-    if (task.branch) {
+    if (branch) {
       updateTask(taskId, { status: 'merging' });
       syncRepoStatus(repo.id);
       publishTaskStatus(getTask(taskId)!, 'Merging into main...');
 
       try {
-        mergeIntoMain(repo.path, task.branch);
-        broker.publish({ type: 'git.merge', repoId: repo.id, from: task.branch, into: getDefaultBranch(repo.path) });
+        mergeIntoMain(repo.path, branch);
+        broker.publish({ type: 'git.merge', repoId: repo.id, from: branch, into: getDefaultBranch(repo.path) });
       } catch (e: unknown) {
         logger.warn(`Merge conflict during approval of task ${taskId}`, e);
         const errMsg = e instanceof Error ? e.message : String(e);
@@ -753,7 +810,7 @@ export async function approveTask(taskId: string): Promise<void> {
         const result = await runClaude({
           taskId,
           workDir: repo.path,
-          prompt: `There's a merge conflict when merging ${task.branch} into main. Error: ${errMsg}\n\nResolve all merge conflicts, commit the resolution, and ensure the code is working.`,
+          prompt: `There's a merge conflict when merging ${branch} into main. Error: ${errMsg}\n\nResolve all merge conflicts, commit the resolution, and ensure the code is working.`,
           sessionId: task.sessionId ?? undefined,
           onStatusUpdate: (status) => {
             broker.publish({ type: 'task.status', taskId, status: 'resolving_conflict', message: status });
@@ -780,7 +837,7 @@ export async function approveTask(taskId: string): Promise<void> {
     }
 
     // Clean up worktree only if no other tasks use this session
-    if (task.worktreePath && task.branch && task.sessionRef) {
+    if (task.worktreePath && branch && task.sessionRef) {
       const db = getDb();
       const queuedInSession = (db.prepare(
         "SELECT id FROM tasks WHERE session_ref = ? AND id != ? AND status IN ('queued', 'working', 'validating', 'paused')"
@@ -790,7 +847,7 @@ export async function approveTask(taskId: string): Promise<void> {
         try {
           removeWorktree(repo.path, task.worktreePath);
           getDb().prepare('UPDATE worktrees SET active = 0 WHERE task_id = ?').run(taskId);
-          broker.publish({ type: 'git.branch_created', repoId: repo.id, branch: `removed:${task.branch}` });
+          broker.publish({ type: 'git.branch_created', repoId: repo.id, branch: `removed:${branch}` });
         } catch (e) {
           logger.warn(`Worktree cleanup failed for task ${taskId}`, e);
         }

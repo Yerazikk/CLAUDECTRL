@@ -36,6 +36,11 @@ export function checkoutBranch(repoPath: string, branch: string): void {
   run(`git checkout ${branch}`, repoPath);
 }
 
+/** Rename the branch currently checked out at worktreePath. Throws on failure (e.g. name collision). */
+export function renameBranch(worktreePath: string, oldName: string, newName: string): void {
+  run(`git branch -m ${oldName} ${newName}`, worktreePath);
+}
+
 export function branchExists(repoPath: string, branch: string): boolean {
   const result = runSafe(`git branch --list ${branch}`, repoPath);
   return result.length > 0;

@@ -143,6 +143,13 @@ export function runMigrations(db: Database.Database): void {
         CREATE INDEX IF NOT EXISTS idx_tasks_session_ref ON tasks(session_ref);
       `,
     },
+    {
+      name: '003_commit_message_and_branch_slug',
+      sql: `
+        ALTER TABLE tasks ADD COLUMN commit_message TEXT;
+        ALTER TABLE tasks ADD COLUMN branch_slug TEXT;
+      `,
+    },
   ];
 
   const applied = new Set(

@@ -42,6 +42,8 @@ export interface Task {
   sessionRef: string | null;
   lastMessage: string | null;
   lastResult: string | null;
+  commitMessage: string | null;
+  branchSlug: string | null;
   archived: boolean;
   createdAt: string;
   updatedAt: string;
