@@ -46,6 +46,7 @@ export function SessionPanel({
   const [error, setError] = useState<string | null>(null);
   const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
   const [editValue, setEditValue] = useState('');
+  const [expandedText, setExpandedText] = useState<string | null>(null);
 
   const { isListening, toggle: toggleListening, hasSupport: hasSpeechSupport } = useSpeechToText((finalizedText) => {
     // Append below/after whatever is already typed — never overwrite it.
@@ -113,6 +114,13 @@ export function SessionPanel({
     : (task.startedAt && task.completedAt)
       ? formatDuration(new Date(task.completedAt).getTime() - new Date(task.startedAt).getTime())
       : '';
+
+  // Everything Claude wrote this session, for the click-to-expand deep-dive view —
+  // the inline bubbles only ever show one paragraph per turn.
+  const fullTranscript = turns
+    .map(t => t.fullText || t.summary)
+    .filter(Boolean)
+    .join('\n\n———\n\n') || task.lastResult || '';
 
   const inputPlaceholder = isReview
     ? 'Give feedback or approve above...'
@@ -245,7 +253,7 @@ export function SessionPanel({
             <div key={i}>
               {turn?.summary && (
                 <>
-                  <AssistantBubble text={turn.summary} />
+                  <AssistantBubble text={turn.summary} onClick={() => setExpandedText(fullTranscript)} />
                   {(turnTokens > 0 || turnDuration || turn.filesEdited.length > 0) && (
                     <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 4, paddingLeft: 2 }}>
                       {turnTokens > 0 && (
@@ -272,24 +280,32 @@ export function SessionPanel({
 
         {/* Error display */}
         {isFailed && task.lastResult && (
-          <div style={{
-            padding: '8px 12px', borderRadius: 'var(--r-md)',
-            boxShadow: 'inset 3px 3px 6px rgb(163 177 198 / 0.3), inset -3px -3px 6px rgba(255,255,255,0.3), inset 0 0 0 1px rgba(224,82,82,0.2)',
-            fontSize: 12, color: 'var(--c-failed)', lineHeight: 1.5,
-            whiteSpace: 'pre-wrap', wordBreak: 'break-word', overflow: 'auto', maxHeight: 120,
-          }}>
+          <div
+            onClick={() => setExpandedText(fullTranscript)}
+            title="Click to expand"
+            style={{
+              padding: '8px 12px', borderRadius: 'var(--r-md)',
+              boxShadow: 'inset 3px 3px 6px rgb(163 177 198 / 0.3), inset -3px -3px 6px rgba(255,255,255,0.3), inset 0 0 0 1px rgba(224,82,82,0.2)',
+              fontSize: 12, color: 'var(--c-failed)', lineHeight: 1.5,
+              whiteSpace: 'pre-wrap', wordBreak: 'break-word', overflow: 'auto', maxHeight: 120,
+              cursor: 'pointer',
+            }}>
             {task.lastResult}
           </div>
         )}
 
         {/* Review/Done last result fallback */}
         {(isReview || isDone) && turns.length === 0 && task.lastResult && (
-          <div style={{
-            padding: '8px 12px', borderRadius: '2px 12px 12px 12px',
-            boxShadow: 'var(--shadow-inset-sm)', background: 'var(--c-bg)',
-            fontSize: 12, color: 'var(--c-fg)', lineHeight: 1.6,
-            whiteSpace: 'pre-wrap', overflow: 'auto', maxHeight: 180,
-          }}>
+          <div
+            onClick={() => setExpandedText(fullTranscript)}
+            title="Click to expand"
+            style={{
+              padding: '8px 12px', borderRadius: '2px 12px 12px 12px',
+              boxShadow: 'var(--shadow-inset-sm)', background: 'var(--c-bg)',
+              fontSize: 12, color: 'var(--c-fg)', lineHeight: 1.6,
+              whiteSpace: 'pre-wrap', overflow: 'auto', maxHeight: 180,
+              cursor: 'pointer',
+            }}>
             {task.lastResult}
           </div>
         )}
@@ -414,6 +430,53 @@ export function SessionPanel({
         </div>
       )}
 
+      {/* Deep-dive modal — full, un-clipped transcript text, click any bubble to open */}
+      {expandedText && (
+        <div
+          onClick={() => setExpandedText(null)}
+          style={{
+            position: 'fixed', inset: 0, background: 'rgba(20,22,28,0.45)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            zIndex: 1000, padding: 24,
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              background: 'var(--c-bg)', borderRadius: 'var(--r-lg)',
+              boxShadow: 'var(--shadow-raised-sm)',
+              width: 'min(640px, 100%)', maxHeight: '80vh',
+              display: 'flex', flexDirection: 'column', overflow: 'hidden',
+            }}
+          >
+            <div style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+              padding: '12px 16px', borderBottom: '1px solid rgba(163,177,198,0.15)', flexShrink: 0,
+            }}>
+              <span style={{
+                fontSize: 13, fontWeight: 600, color: 'var(--c-fg)',
+                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginRight: 12,
+              }}>
+                {task.title}
+              </span>
+              <button
+                onClick={() => setExpandedText(null)}
+                style={{ fontSize: 18, color: 'var(--c-subtle)', flexShrink: 0, lineHeight: 1 }}
+              >
+                {'×'}
+              </button>
+            </div>
+            <div style={{
+              padding: '14px 16px', overflow: 'auto',
+              fontSize: 13, color: 'var(--c-fg)', lineHeight: 1.7,
+              whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+            }}>
+              {expandedText}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Resize handles */}
       {onResizeMouseDown && (
         <>
@@ -442,17 +505,21 @@ function UserBubble({ text }: { text: string }) {
   );
 }
 
-function AssistantBubble({ text }: { text: string }) {
+function AssistantBubble({ text, onClick }: { text: string; onClick?: () => void }) {
   return (
-    <div style={{
-      maxWidth: '92%',
-      padding: '8px 12px',
-      borderRadius: '2px 12px 12px 12px',
-      boxShadow: 'var(--shadow-inset-sm)',
-      background: 'var(--c-bg)',
-      fontSize: 13, color: 'var(--c-fg)', lineHeight: 1.6,
-      wordBreak: 'break-word',
-    }}>
+    <div
+      onClick={onClick}
+      title={onClick ? 'Click to expand' : undefined}
+      style={{
+        maxWidth: '92%',
+        padding: '8px 12px',
+        borderRadius: '2px 12px 12px 12px',
+        boxShadow: 'var(--shadow-inset-sm)',
+        background: 'var(--c-bg)',
+        fontSize: 13, color: 'var(--c-fg)', lineHeight: 1.6,
+        wordBreak: 'break-word',
+        cursor: onClick ? 'pointer' : undefined,
+      }}>
       {text}
     </div>
   );

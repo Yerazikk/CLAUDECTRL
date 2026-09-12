@@ -8,6 +8,8 @@ export interface FileEdit {
 export interface Turn {
   /** The final human-readable closing paragraph for this turn */
   summary: string;
+  /** Every paragraph Claude wrote this turn (across all its messages), for the deep-dive view */
+  fullText: string;
   filesEdited: FileEdit[];
   inputTokens: number;
   outputTokens: number;
@@ -21,7 +23,7 @@ export interface ParsedOutput {
 }
 
 function createTurn(): Turn {
-  return { summary: '', filesEdited: [], inputTokens: 0, outputTokens: 0, durationMs: 0 };
+  return { summary: '', fullText: '', filesEdited: [], inputTokens: 0, outputTokens: 0, durationMs: 0 };
 }
 
 function isEmptyTurn(t: Turn): boolean {
@@ -62,6 +64,11 @@ export function updateParsedOutput(parsed: ParsedOutput, line: string): ParsedOu
           );
           if (paragraphs.length > 0) {
             turn.summary = paragraphs[paragraphs.length - 1].trim();
+            // Each assistant event is a distinct, already-complete message — append
+            // rather than overwrite, so the deep-dive view has everything Claude said.
+            turn.fullText = turn.fullText
+              ? `${turn.fullText}\n\n${paragraphs.join('\n\n')}`
+              : paragraphs.join('\n\n');
           }
         }
       }

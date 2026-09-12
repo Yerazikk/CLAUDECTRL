@@ -308,7 +308,7 @@ export async function createTask(repoId: string, userMessage: string, sessionRef
   if (!repo) throw new Error(`Repository ${repoId} not found`);
 
   const taskId = newId();
-  const title = userMessage.slice(0, 80);
+  const title = userMessage;
 
   db.prepare(`
     INSERT INTO tasks (id, repo_id, title, status, last_message, session_ref)
@@ -543,7 +543,7 @@ async function runTask(task: Task, repo: Repository, userMessage: string, isResu
       `).run(newId(), task.id, displayText);
 
       updateTask(task.id, {
-        lastResult: displayText.slice(0, 500),
+        lastResult: displayText,
         ...(commitMessage ? { commitMessage } : {}),
         ...(branchSlug ? { branchSlug } : {}),
       });
@@ -701,7 +701,7 @@ export function editQueuedTask(taskId: string, newMessage: string): Task {
   if (!task) throw new Error(`Task ${taskId} not found`);
   if (task.status !== 'queued') throw new Error('Can only edit queued tasks');
 
-  const title = newMessage.slice(0, 80);
+  const title = newMessage;
   db.prepare(
     "UPDATE tasks SET title = ?, last_message = ?, updated_at = datetime('now') WHERE id = ?"
   ).run(title, newMessage, taskId);
