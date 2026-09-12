@@ -24,7 +24,6 @@ const statusLabels: Record<Task['status'], string> = {
 interface Props {
   task: Task;
   repoId: string;
-  output: string[];
   parsed: ParsedOutput;
   queuedTasks: Task[];
   onAddToQueue: (sessionRef: string, message: string) => void;
@@ -33,13 +32,12 @@ interface Props {
 }
 
 export function SessionPanel({
-  task, repoId, output, parsed,
+  task, repoId, parsed,
   queuedTasks, onAddToQueue,
   onDragHandleMouseDown, onResizeMouseDown,
 }: Props) {
   const inputKey = `session-input:${task.id}`;
   const sentMsgKey = `session-sent:${task.id}`;
-  const [showLogs, setShowLogs] = useState(false);
   const [inputValue, setInputValue] = useState(() => localStorage.getItem(inputKey) ?? '');
   // User messages sent as feedback (right bubbles beyond the first task.title)
   const [sentMessages, setSentMessages] = useState<string[]>(() => {
@@ -180,12 +178,6 @@ export function SessionPanel({
           {(isDone || isFailed || isPausedOrStopped) && (
             <ActionBtn label={'\uD83D\uDCE6'} title="Archive" onClick={() => handleAction(() => api.repos.archiveTask(repoId, task.id))} />
           )}
-          <ActionBtn
-            label={showLogs ? '\u25BC' : '\u25B6'}
-            title="Toggle logs"
-            onClick={() => setShowLogs(!showLogs)}
-            active={showLogs}
-          />
         </div>
       </div>
 
@@ -380,28 +372,6 @@ export function SessionPanel({
           </div>
         )}
       </div>
-
-      {/* Terminal drawer */}
-      {showLogs && output.length > 0 && (
-        <div style={{
-          margin: '0 10px 6px',
-          padding: '8px 10px',
-          borderRadius: 'var(--r-md)',
-          boxShadow: 'var(--shadow-inset-deep)',
-          background: 'var(--c-bg)',
-          maxHeight: 140,
-          overflow: 'auto',
-          flexShrink: 0,
-        }}>
-          <pre style={{
-            fontFamily: 'var(--mono)', fontSize: 10,
-            color: 'var(--c-muted)', whiteSpace: 'pre-wrap',
-            wordBreak: 'break-all', lineHeight: 1.5, margin: 0,
-          }}>
-            {output.slice(-100).join('\n')}
-          </pre>
-        </div>
-      )}
 
       {/* Single smart input */}
       {hasInput && (

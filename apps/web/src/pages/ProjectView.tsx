@@ -11,11 +11,10 @@ interface Props {
   tasks: Task[];
   sessions: Session[];
   onBack: () => void;
-  getTaskOutput: (taskId: string) => string[];
   getTaskParsed: (taskId: string) => ParsedOutput;
 }
 
-export function ProjectView({ repo, tasks, sessions, onBack, getTaskOutput, getTaskParsed }: Props) {
+export function ProjectView({ repo, tasks, sessions, onBack, getTaskParsed }: Props) {
   const draftKey = `draft:${repo.id}`;
   const [newTaskInput, setNewTaskInput] = useState(() => localStorage.getItem(draftKey) ?? '');
   const [submitting, setSubmitting] = useState(false);
@@ -31,6 +30,15 @@ export function ProjectView({ repo, tasks, sessions, onBack, getTaskOutput, getT
   const resizing = useRef<{ taskId: string; dir: 'right' | 'bottom' | 'corner'; startX: number; startY: number; origW: number; origH: number } | null>(null);
   const liveRef = useRef<Record<string, Partial<PanelLayout>>>({});
   const [liveLayouts, setLiveLayouts] = useState<Record<string, Partial<PanelLayout>>>({});
+
+  // Click-to-front stacking for overlapping session cards
+  const [zIndices, setZIndices] = useState<Record<string, number>>({});
+  const zCounterRef = useRef(1000);
+  const bringToFront = useCallback((taskId: string) => {
+    zCounterRef.current += 1;
+    const z = zCounterRef.current;
+    setZIndices(prev => (prev[taskId] === z ? prev : { ...prev, [taskId]: z }));
+  }, []);
 
   useEffect(() => {
     const h = () => setIsMobile(window.innerWidth < 640);
@@ -322,7 +330,6 @@ export function ProjectView({ repo, tasks, sessions, onBack, getTaskOutput, getT
                 <SessionPanel
                   task={activeTask}
                   repoId={repo.id}
-                  output={getTaskOutput(activeTask.id)}
                   parsed={getTaskParsed(activeTask.id)}
                   queuedTasks={activeQueued}
                   onAddToQueue={handleAddToQueue}
@@ -346,15 +353,18 @@ export function ProjectView({ repo, tasks, sessions, onBack, getTaskOutput, getT
               const sessionTasks = task.sessionRef ? (tasksBySession.get(task.sessionRef) ?? []) : [];
               const queued = sessionTasks.filter(st => st.id !== task.id && st.status === 'queued');
               return (
-                <div key={task.id} style={{
-                  position: 'absolute',
-                  left: layout.x, top: layout.y,
-                  width: layout.width, height: layout.height,
-                }}>
+                <div
+                  key={task.id}
+                  onMouseDownCapture={() => bringToFront(task.id)}
+                  style={{
+                    position: 'absolute',
+                    left: layout.x, top: layout.y,
+                    width: layout.width, height: layout.height,
+                    zIndex: zIndices[task.id] ?? idx + 1,
+                  }}>
                   <SessionPanel
                     task={task}
                     repoId={repo.id}
-                    output={getTaskOutput(task.id)}
                     parsed={getTaskParsed(task.id)}
                     queuedTasks={queued}
                     onAddToQueue={handleAddToQueue}
