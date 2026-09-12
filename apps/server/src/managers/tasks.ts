@@ -720,14 +720,20 @@ export async function retryTask(taskId: string): Promise<Task> {
   const task = getTask(taskId);
   if (!task) throw new Error(`Task ${taskId} not found`);
 
-  const retryable = ['failed', 'stopped'];
+  const retryable = ['failed', 'stopped', 'paused'];
   if (!retryable.includes(task.status)) {
-    throw new Error('Only failed or stopped tasks can be retried');
+    throw new Error('Only failed, stopped, or paused tasks can be retried');
   }
 
-  const message = task.lastMessage ?? task.title;
-  if (!message) throw new Error('No original message to retry with');
+  const message = 'retry or continue';
 
+  // Existing Claude session to continue — send it as a normal chat message
+  if (task.sessionId) {
+    await submitFeedback(taskId, message);
+    return getTask(taskId)!;
+  }
+
+  // No session ever started (e.g. failed before Claude ran) — start fresh
   return createTask(task.repoId, message);
 }
 
