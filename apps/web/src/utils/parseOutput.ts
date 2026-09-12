@@ -1,24 +1,35 @@
-export interface ChatMessage {
-  role: 'user' | 'assistant';
-  text: string;
+export interface FileEdit {
+  path: string;
+  linesAdded: number;
+  linesRemoved: number;
 }
 
-export interface ParsedOutput {
-  filesEdited: Array<{ path: string; linesAdded: number; linesRemoved: number }>;
+/** One Claude invocation (initial run, queued task, feedback, or resume) within a session */
+export interface Turn {
+  /** The final human-readable closing paragraph for this turn */
   summary: string;
-  currentAction: string;
-  toolUseCount: number;
+  filesEdited: FileEdit[];
   inputTokens: number;
   outputTokens: number;
   durationMs: number;
-  /** One entry per assistant turn (last entry updated in-place while streaming) */
-  assistantMessages: string[];
-  /** Internal: next assistant text should start a new turn slot */
-  _newTurnPending: boolean;
+}
+
+export interface ParsedOutput {
+  turns: Turn[];
+  currentAction: string;
+  toolUseCount: number;
+}
+
+function createTurn(): Turn {
+  return { summary: '', filesEdited: [], inputTokens: 0, outputTokens: 0, durationMs: 0 };
+}
+
+function isEmptyTurn(t: Turn): boolean {
+  return !t.summary && t.filesEdited.length === 0 && t.durationMs === 0;
 }
 
 export function createParsedOutput(): ParsedOutput {
-  return { filesEdited: [], summary: '', currentAction: '', toolUseCount: 0, inputTokens: 0, outputTokens: 0, durationMs: 0, assistantMessages: [], _newTurnPending: false };
+  return { turns: [createTurn()], currentAction: '', toolUseCount: 0 };
 }
 
 /**
@@ -29,35 +40,29 @@ export function updateParsedOutput(parsed: ParsedOutput, line: string): ParsedOu
   try {
     const event = JSON.parse(line);
 
-    // Assistant text messages → extract summary + track per-turn messages
+    // Each Claude invocation (new task, queued dequeue, feedback, resume) emits its
+    // own 'system init' — start a fresh turn once the current one has content.
+    if (event.type === 'system' && event.subtype === 'init' && !isEmptyTurn(parsed.turns[parsed.turns.length - 1])) {
+      parsed.turns.push(createTurn());
+    }
+
+    const turn = parsed.turns[parsed.turns.length - 1];
+
+    // Assistant text messages → extract the closing paragraph for this turn
     if (event.type === 'assistant' && event.message?.content) {
       const contents = Array.isArray(event.message.content) ? event.message.content : [event.message.content];
       for (const block of contents) {
         if (block.type === 'text' && typeof block.text === 'string') {
           const text = block.text.trim();
           if (!text) continue;
-          // Extract last non-code paragraph for summary
           const paragraphs = text.split(/\n\n+/).filter(
             (p: string) => p.trim() && !p.trim().startsWith('```')
           );
           if (paragraphs.length > 0) {
-            parsed.summary = paragraphs[paragraphs.length - 1].trim();
-          }
-          // Track full assistant text per turn
-          if (parsed._newTurnPending || parsed.assistantMessages.length === 0) {
-            parsed.assistantMessages.push(text);
-            parsed._newTurnPending = false;
-          } else {
-            // Streaming update: replace last entry in-place
-            parsed.assistantMessages[parsed.assistantMessages.length - 1] = text;
+            turn.summary = paragraphs[paragraphs.length - 1].trim();
           }
         }
       }
-    }
-
-    // System init after first run = resume/feedback → next assistant text is a new turn
-    if (event.type === 'system' && event.subtype === 'init' && parsed.assistantMessages.length > 0) {
-      parsed._newTurnPending = true;
     }
 
     // Tool use events
@@ -72,9 +77,9 @@ export function updateParsedOutput(parsed: ParsedOutput, line: string): ParsedOu
           if (name === 'Edit' || name === 'Write') {
             const filePath: string = input.file_path ?? input.path ?? '';
             if (filePath) {
-              const existing = parsed.filesEdited.find(f => f.path === filePath);
+              const existing = turn.filesEdited.find(f => f.path === filePath);
               if (!existing) {
-                parsed.filesEdited.push({ path: filePath, linesAdded: 0, linesRemoved: 0 });
+                turn.filesEdited.push({ path: filePath, linesAdded: 0, linesRemoved: 0 });
               }
             }
             parsed.currentAction = `Editing ${shortPath(filePath)}`;
@@ -101,20 +106,20 @@ export function updateParsedOutput(parsed: ParsedOutput, line: string): ParsedOu
       if (Array.isArray(contents)) {
         for (const block of contents) {
           if (block.type === 'tool_result' && typeof block.content === 'string') {
-            parseDiffCounts(parsed, block.content);
+            parseDiffCounts(turn, block.content);
           }
         }
       }
     }
 
-    // Result event — capture token usage and duration
+    // Result event — capture token usage and duration for this turn
     if (event.type === 'result') {
       if (event.usage) {
-        parsed.inputTokens = (event.usage.input_tokens ?? 0) + (event.usage.cache_read_input_tokens ?? 0);
-        parsed.outputTokens = event.usage.output_tokens ?? 0;
+        turn.inputTokens = (event.usage.input_tokens ?? 0) + (event.usage.cache_read_input_tokens ?? 0);
+        turn.outputTokens = event.usage.output_tokens ?? 0;
       }
       if (event.duration_ms) {
-        parsed.durationMs = event.duration_ms;
+        turn.durationMs = event.duration_ms;
       }
     }
 
@@ -125,12 +130,12 @@ export function updateParsedOutput(parsed: ParsedOutput, line: string): ParsedOu
   return parsed;
 }
 
-function parseDiffCounts(parsed: ParsedOutput, text: string): void {
+function parseDiffCounts(turn: Turn, text: string): void {
   // Look for +N/-M patterns in diff output
   const addMatch = text.match(/(\d+)\s*(?:insertions?|lines?\s*added|\+)/);
   const removeMatch = text.match(/(\d+)\s*(?:deletions?|lines?\s*removed|-)/);
-  if ((addMatch || removeMatch) && parsed.filesEdited.length > 0) {
-    const last = parsed.filesEdited[parsed.filesEdited.length - 1];
+  if ((addMatch || removeMatch) && turn.filesEdited.length > 0) {
+    const last = turn.filesEdited[turn.filesEdited.length - 1];
     if (addMatch) last.linesAdded += parseInt(addMatch[1], 10);
     if (removeMatch) last.linesRemoved += parseInt(removeMatch[1], 10);
   }

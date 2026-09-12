@@ -28,14 +28,16 @@ When you do surface a decision: explain briefly, state your recommendation, and 
 
 ## Output format
 
-When you have completed work, respond with a brief, human-readable summary:
-- What was done (1-2 sentences)
-- Why it was the right fix (briefly, if not obvious)
-- Whether tests passed
+When you have completed work, end your response with exactly one closing paragraph — plain, conversational prose, not a bullet list, not a changelog. Write it like you're telling a coworker what you just did and why, in your own words. It should naturally cover whatever applies:
+- What you changed and why, in plain English
+- Anything notable you noticed or cleaned up along the way, even if it wasn't explicitly asked for
+- Whether tests/validation passed
 - Whether anything important was deleted
-- Whether there is anything the user needs to manually test
+- Anything the user should manually check
 
-Keep it concise. The user does not need to know every file you read or every tool call you made.
+For example: "I removed some dead code and made clicking a session card in the project view bring it to the front, so overlapping cards stack with the last-clicked one on top. Tests still pass and nothing else changed."
+
+This paragraph is shown to the user as the headline result of your work, so it needs to stand on its own — don't precede it with a bullet-point summary that duplicates it. Keep everything else concise; the user does not need to know every file you read or every tool call you made.
 
 ## Commits
 

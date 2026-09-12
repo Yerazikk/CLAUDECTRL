@@ -24,15 +24,29 @@ import type { Task, Repository, Session } from '@claudectrl/shared';
 // In-memory abort controllers for running tasks
 const activeAbortControllers = new Map<string, AbortController>();
 
-// Per-session task execution lock: serializes tasks within the same session
-// key = sessionRef (our session ID), value = promise chain
-const sessionLocks = new Map<string, Promise<void>>();
+// Sessions with a task currently executing — guards against dequeuing a
+// queued task while another task in the same session is still running
+const sessionRunning = new Set<string>();
 
-function withSessionLock(sessionRef: string, fn: () => Promise<void>): Promise<void> {
-  const existing = sessionLocks.get(sessionRef) ?? Promise.resolve();
-  const next = existing.then(() => fn()).catch(() => {});
-  sessionLocks.set(sessionRef, next);
-  return next;
+/**
+ * Pick up the next queued task in a session, if nothing is already running
+ * for it. Called whenever a task finishes in a state that allows the queue
+ * to continue (i.e. not failed/paused/stopped), and whenever a new task is
+ * queued into a session that's currently idle.
+ */
+function scheduleNextInSession(sessionRef: string, repo: Repository): void {
+  if (sessionRunning.has(sessionRef)) return;
+  const db = getDb();
+  const row = db.prepare(
+    "SELECT * FROM tasks WHERE session_ref = ? AND status = 'queued' ORDER BY created_at ASC LIMIT 1"
+  ).get(sessionRef) as Record<string, unknown> | undefined;
+  if (!row) return;
+
+  const nextTask = dbRowToTask(row);
+  sessionRunning.add(sessionRef);
+  runTask(nextTask, repo, nextTask.lastMessage ?? nextTask.title, false, sessionRef).catch((err) => {
+    logger.error(`Queued task ${nextTask.id} failed unexpectedly`, err);
+  });
 }
 
 function dbRowToTask(row: Record<string, unknown>): Task {
@@ -281,10 +295,8 @@ export async function createTask(repoId: string, userMessage: string, sessionRef
   broker.publish({ type: 'task.created', task });
 
   if (sessionRef) {
-    // Queue within existing session — use session lock to serialize
-    withSessionLock(sessionRef, () => runTask(task, repo, userMessage, false, sessionRef)).catch((err) => {
-      logger.error(`Task ${taskId} failed unexpectedly`, err);
-    });
+    // Queue within existing session — only starts if nothing else is running for it
+    scheduleNextInSession(sessionRef, repo);
   } else {
     // New independent task — no lock needed, creates its own worktree
     runTask(task, repo, userMessage).catch((err) => {
@@ -378,6 +390,11 @@ async function runTask(task: Task, repo: Repository, userMessage: string, isResu
   const controller = new AbortController();
   activeAbortControllers.set(task.id, controller);
 
+  // Track which session this run belongs to so completion can safely
+  // hand off to the next queued task (set below once known, for brand-new tasks)
+  let effectiveSessionRef = task.sessionRef ?? sessionRef;
+  if (effectiveSessionRef) sessionRunning.add(effectiveSessionRef);
+
   try {
     let workDir = repo.path;
     let branch = task.branch;
@@ -440,6 +457,8 @@ async function runTask(task: Task, repo: Repository, userMessage: string, isResu
       updateTask(task.id, { sessionRef: sessId });
       // Update local reference for this run
       sessionRef = sessId;
+      effectiveSessionRef = sessId;
+      sessionRunning.add(sessId);
     }
 
     const updatedTask = updateTask(task.id, {
@@ -514,6 +533,14 @@ async function runTask(task: Task, repo: Repository, userMessage: string, isResu
   } finally {
     activeAbortControllers.delete(task.id);
     refreshUsage().catch(() => {});
+
+    if (effectiveSessionRef) {
+      sessionRunning.delete(effectiveSessionRef);
+      const finalTask = getTask(task.id);
+      if (finalTask && !['failed', 'paused', 'stopped'].includes(finalTask.status)) {
+        scheduleNextInSession(effectiveSessionRef, repo);
+      }
+    }
   }
 }
 

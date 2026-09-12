@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import type { Task } from '@claudectrl/shared';
-import type { ParsedOutput } from '../utils/parseOutput';
+import type { ParsedOutput, FileEdit } from '../utils/parseOutput';
 import { formatDuration } from '../utils/parseOutput';
 import { StatusDot } from './StatusDot';
 import { api } from '../utils/api';
@@ -71,13 +71,17 @@ export function SessionPanel({
     try { await action(); } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
   };
 
-  // Smart unified send: feedback if Claude is engaged, queue otherwise
+  // Feedback talks to Claude about *this* task directly (only makes sense
+  // once it's stopped to ask you something: failed, or sitting in review).
+  // Everything else queues behind whatever the session is already doing.
+  const canGiveFeedback = isFailed || isReview;
+
   const handleSend = async () => {
     const msg = inputValue.trim();
     if (!msg || !task.sessionRef) return;
     setInputValue('');
     localStorage.removeItem(inputKey);
-    if (isActive || isReview) {
+    if (canGiveFeedback) {
       // Track immediately so the bubble appears right away
       const next = [...sentMessages, msg];
       setSentMessages(next);
@@ -99,20 +103,24 @@ export function SessionPanel({
     await handleAction(() => api.repos.deleteTask(repoId, taskId));
   };
 
-  // Stats
-  const totalTokens = parsed.inputTokens + parsed.outputTokens;
-  const totalLines = parsed.filesEdited.reduce((s, f) => s + f.linesAdded + f.linesRemoved, 0);
-  const duration = parsed.durationMs
-    ? formatDuration(parsed.durationMs)
+  // Stats — one entry per Claude invocation (turn) in this session
+  const turns = parsed.turns.filter(t => t.summary || t.filesEdited.length > 0 || t.durationMs > 0);
+  const allFilesEdited = turns.flatMap(t => t.filesEdited);
+  const uniqueFileCount = new Set(allFilesEdited.map(f => f.path)).size;
+  const totalTokens = turns.reduce((s, t) => s + t.inputTokens + t.outputTokens, 0);
+  const totalLines = allFilesEdited.reduce((s, f) => s + f.linesAdded + f.linesRemoved, 0);
+  const totalDurationMs = turns.reduce((s, t) => s + t.durationMs, 0);
+  const duration = totalDurationMs
+    ? formatDuration(totalDurationMs)
     : (task.startedAt && task.completedAt)
       ? formatDuration(new Date(task.completedAt).getTime() - new Date(task.startedAt).getTime())
       : '';
 
   const inputPlaceholder = isReview
     ? 'Give feedback or approve above...'
-    : isActive
-      ? 'Message Claude...'
-      : 'Queue next task...';
+    : isFailed
+      ? 'Tell Claude what to fix...'
+      : 'Queue next message...';
 
   const hasInput = !!task.sessionRef;
 
@@ -189,8 +197,8 @@ export function SessionPanel({
         </div>
       </div>
 
-      {/* Stats + current action bar */}
-      {(parsed.currentAction || totalTokens > 0 || parsed.filesEdited.length > 0 || duration) && (
+      {/* Totals across every request in this session + current action */}
+      {(parsed.currentAction || totalTokens > 0 || uniqueFileCount > 0 || duration) && (
         <div style={{
           padding: '5px 14px',
           borderBottom: '1px solid rgba(163,177,198,0.08)',
@@ -216,8 +224,8 @@ export function SessionPanel({
             {totalTokens > 0 && (
               <StatChip>{totalTokens >= 1000 ? `${(totalTokens / 1000).toFixed(1)}k` : totalTokens} tokens</StatChip>
             )}
-            {parsed.filesEdited.length > 0 && (
-              <StatChip>{parsed.filesEdited.length} file{parsed.filesEdited.length !== 1 ? 's' : ''}</StatChip>
+            {uniqueFileCount > 0 && (
+              <StatChip>{uniqueFileCount} file{uniqueFileCount !== 1 ? 's' : ''}</StatChip>
             )}
             {totalLines > 0 && (
               <StatChip>{totalLines} lines</StatChip>
@@ -235,19 +243,40 @@ export function SessionPanel({
         {/* First user message */}
         <UserBubble text={task.title} />
 
-        {/* Interleaved assistant + user turns */}
-        {Array.from({ length: Math.max(parsed.assistantMessages.length, sentMessages.length) }, (_, i) => (
-          <div key={i}>
-            {parsed.assistantMessages[i] && (
-              <AssistantBubble text={parsed.assistantMessages[i]} />
-            )}
-            {sentMessages[i] && (
-              <div style={{ marginTop: 8 }}>
-                <UserBubble text={sentMessages[i]} />
-              </div>
-            )}
-          </div>
-        ))}
+        {/* Interleaved assistant + user turns — each request gets its own closing
+            statement, plus the tokens/time/files that request itself touched */}
+        {Array.from({ length: Math.max(turns.length, sentMessages.length) }, (_, i) => {
+          const turn = turns[i];
+          const turnTokens = turn ? turn.inputTokens + turn.outputTokens : 0;
+          const turnDuration = turn?.durationMs ? formatDuration(turn.durationMs) : '';
+          return (
+            <div key={i}>
+              {turn?.summary && (
+                <>
+                  <AssistantBubble text={turn.summary} />
+                  {(turnTokens > 0 || turnDuration || turn.filesEdited.length > 0) && (
+                    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 4, paddingLeft: 2 }}>
+                      {turnTokens > 0 && (
+                        <StatChip>{turnTokens >= 1000 ? `${(turnTokens / 1000).toFixed(1)}k` : turnTokens} tokens</StatChip>
+                      )}
+                      {turnDuration && <StatChip>{turnDuration}</StatChip>}
+                    </div>
+                  )}
+                  {turn.filesEdited.length > 0 && (
+                    <div style={{ paddingLeft: 2, marginTop: 4 }}>
+                      <FilesList files={turn.filesEdited} />
+                    </div>
+                  )}
+                </>
+              )}
+              {sentMessages[i] && (
+                <div style={{ marginTop: 8 }}>
+                  <UserBubble text={sentMessages[i]} />
+                </div>
+              )}
+            </div>
+          );
+        })}
 
         {/* Error display */}
         {isFailed && task.lastResult && (
@@ -262,7 +291,7 @@ export function SessionPanel({
         )}
 
         {/* Review/Done last result fallback */}
-        {(isReview || isDone) && !parsed.summary && task.lastResult && (
+        {(isReview || isDone) && turns.length === 0 && task.lastResult && (
           <div style={{
             padding: '8px 12px', borderRadius: '2px 12px 12px 12px',
             boxShadow: 'var(--shadow-inset-sm)', background: 'var(--c-bg)',
@@ -291,29 +320,6 @@ export function SessionPanel({
             </div>
           ) : null;
         })()}
-
-        {/* Files touched list */}
-        {parsed.filesEdited.length > 0 && (
-          <div style={{ paddingTop: 4 }}>
-            <div style={{ fontSize: 10, fontWeight: 600, color: 'var(--c-subtle)', textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 3 }}>
-              Files ({parsed.filesEdited.length})
-            </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-              {parsed.filesEdited.map((f, i) => {
-                const name = f.path.replace(/\\/g, '/').split('/').pop() || f.path;
-                const counts: string[] = [];
-                if (f.linesAdded) counts.push(`+${f.linesAdded}`);
-                if (f.linesRemoved) counts.push(`-${f.linesRemoved}`);
-                return (
-                  <div key={i} style={{ fontSize: 11, color: 'var(--c-muted)', fontFamily: 'var(--mono)', display: 'flex', gap: 4 }}>
-                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{name}</span>
-                    {counts.length > 0 && <span style={{ color: 'var(--c-subtle)', flexShrink: 0 }}>({counts.join('/')})</span>}
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        )}
 
         {/* Queued tasks — visible so user can manage the queue */}
         {queuedTasks.length > 0 && (
@@ -478,6 +484,25 @@ function AssistantBubble({ text }: { text: string }) {
       wordBreak: 'break-word',
     }}>
       {text}
+    </div>
+  );
+}
+
+function FilesList({ files }: { files: FileEdit[] }) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+      {files.map((f, i) => {
+        const name = f.path.replace(/\\/g, '/').split('/').pop() || f.path;
+        const counts: string[] = [];
+        if (f.linesAdded) counts.push(`+${f.linesAdded}`);
+        if (f.linesRemoved) counts.push(`-${f.linesRemoved}`);
+        return (
+          <div key={i} style={{ fontSize: 11, color: 'var(--c-muted)', fontFamily: 'var(--mono)', display: 'flex', gap: 4 }}>
+            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{name}</span>
+            {counts.length > 0 && <span style={{ color: 'var(--c-subtle)', flexShrink: 0 }}>({counts.join('/')})</span>}
+          </div>
+        );
+      })}
     </div>
   );
 }
