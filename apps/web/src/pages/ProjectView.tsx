@@ -126,9 +126,10 @@ export function ProjectView({ repo, tasks, sessions, onBack, getTaskParsed }: Pr
   }
 
   // Sort: status priority, then creation time desc
+  // (queued shares top priority with working so a brand-new session lands at the top immediately)
   const statusPriority: Record<string, number> = {
-    working: 0, validating: 1, queued: 2, ready_for_review: 3, paused: 4,
-    failed: 5, stopped: 6, done: 7,
+    working: 0, queued: 0, validating: 1, ready_for_review: 2, paused: 3,
+    failed: 4, stopped: 5, done: 6,
   };
   displayTasks.sort((a, b) => {
     const pa = statusPriority[a.status] ?? 99;
