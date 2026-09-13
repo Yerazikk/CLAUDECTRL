@@ -58,7 +58,6 @@ export function SessionPanel({
   });
 
   const isActive = ['working', 'validating', 'queued', 'committing', 'merging', 'resolving_conflict'].includes(task.status);
-  const isPauseable = ['working', 'validating', 'queued'].includes(task.status);
   const isReview = task.status === 'ready_for_review';
   const isFailed = task.status === 'failed';
   const isDone = task.status === 'done';
@@ -193,7 +192,7 @@ export function SessionPanel({
         )}
 
         <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
-          {isPauseable && (
+          {isActive && (
             <>
               <ActionBtn label={'⏸'} title="Pause" onClick={() => handleAction(() => api.repos.pauseTask(repoId, task.id))} />
               <ActionBtn label={'■'} title="Stop" onClick={() => handleAction(() => api.repos.stopTask(repoId, task.id))} danger />
@@ -215,9 +214,20 @@ export function SessionPanel({
               onClick={() => handleAction(() => api.repos.clearSession(repoId, task.id))}
             />
           )}
-          {(isDone || isFailed || isPausedOrStopped) && (
-            <ActionBtn label={'📦'} title="Archive" onClick={() => handleAction(() => api.repos.archiveTask(repoId, task.id))} />
-          )}
+          <ActionBtn
+            label={'📦'}
+            title={isActive ? 'Stop and archive' : 'Archive'}
+            onClick={() => handleAction(() => api.repos.archiveTask(repoId, task.id))}
+          />
+          <ActionBtn
+            label={'🗑'}
+            title={isActive ? 'Stop and delete' : 'Delete'}
+            danger
+            onClick={() => {
+              if (!window.confirm('Delete this session? Its transcript and worktree will be removed (the branch is kept).')) return;
+              handleAction(() => api.repos.deleteTask(repoId, task.id));
+            }}
+          />
         </div>
       </div>
 

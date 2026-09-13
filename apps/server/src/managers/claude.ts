@@ -122,7 +122,8 @@ export async function runClaude(opts: ClaudeRunOptions): Promise<ClaudeRunResult
     proc.stdin.end();
 
     if (signal) {
-      signal.addEventListener('abort', () => killProc(proc));
+      if (signal.aborted) killProc(proc);
+      else signal.addEventListener('abort', () => killProc(proc));
     }
 
     let buffer = '';

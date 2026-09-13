@@ -221,7 +221,7 @@ export async function reposRoutes(app: FastifyInstance): Promise<void> {
     }
   );
 
-  // Delete a task (failed/stopped/done only)
+  // Delete a task (stops it first if it's still running)
   app.delete<{ Params: { id: string; taskId: string } }>(
     '/api/repos/:id/tasks/:taskId',
     async (req, reply) => {

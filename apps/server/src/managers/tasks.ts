@@ -32,6 +32,7 @@ import {
   getWorktreeSiblingPath,
   getBranchName,
   mergeIntoMain,
+  abortMerge,
   pushMain,
   commit,
   renameBranch,
@@ -272,7 +273,7 @@ function buildPrompt(task: Task, repo: Repository, userMessage: string): string 
 export function recoverInterruptedTasks(): void {
   const db = getDb();
   const stuck = db.prepare(
-    "SELECT * FROM tasks WHERE status IN ('working', 'queued', 'validating')"
+    "SELECT * FROM tasks WHERE status IN ('working', 'queued', 'validating', 'committing', 'merging', 'resolving_conflict')"
   ).all() as Record<string, unknown>[];
 
   if (stuck.length === 0) return;
@@ -281,6 +282,10 @@ export function recoverInterruptedTasks(): void {
   for (const row of stuck) {
     const taskId = row.id as string;
     const repoId = row.repo_id as string;
+    if (MERGE_STATUSES.includes(row.status as Task['status'])) {
+      const repo = getRepo(repoId);
+      if (repo) abortMerge(repo.path);
+    }
     db.prepare(
       "UPDATE tasks SET status = 'failed', last_result = ?, completed_at = datetime('now'), updated_at = datetime('now') WHERE id = ?"
     ).run('Server restarted — task was interrupted', taskId);
@@ -437,24 +442,47 @@ export async function clearSessionContext(taskId: string): Promise<void> {
   logger.info(`Cleared Claude context for task ${taskId}`);
 }
 
-export async function stopTask(taskId: string): Promise<void> {
+const ACTIVE_STATUSES: Task['status'][] = ['working', 'validating', 'queued', 'committing', 'merging', 'resolving_conflict'];
+const MERGE_STATUSES: Task['status'][] = ['merging', 'resolving_conflict'];
+
+/**
+ * Halt whatever a task is doing — a Claude run, validation, or an approval
+ * mid-merge — and park it in `status`. Works in every state, including one
+ * left behind with nothing actually running, so a session can never get stuck.
+ */
+function interruptTask(taskId: string, status: 'paused' | 'stopped'): Task {
+  const task = getTask(taskId);
+  if (!task) throw new Error(`Task ${taskId} not found`);
+
+  // Set the status first: the aborted run checks it and must not overwrite it
+  const updated = updateTask(taskId, {
+    status,
+    ...(status === 'stopped' ? { completedAt: new Date().toISOString() } : {}),
+  });
+
   const controller = activeAbortControllers.get(taskId);
   if (controller) {
     controller.abort();
     activeAbortControllers.delete(taskId);
   }
-  const task = updateTask(taskId, { status: 'stopped', completedAt: new Date().toISOString() });
+
+  if (MERGE_STATUSES.includes(task.status)) {
+    const repo = getRepo(task.repoId);
+    if (repo) abortMerge(repo.path);
+    appendNotice(taskId, 'Merge interrupted — main was left as it was');
+  }
+
+  return updated;
+}
+
+export async function stopTask(taskId: string): Promise<void> {
+  const task = interruptTask(taskId, 'stopped');
   publishTaskStatus(task);
   broker.publish({ type: 'task.stopped', taskId });
 }
 
 export async function pauseTask(taskId: string): Promise<void> {
-  const controller = activeAbortControllers.get(taskId);
-  if (controller) {
-    controller.abort();
-    activeAbortControllers.delete(taskId);
-  }
-  const task = updateTask(taskId, { status: 'paused' });
+  const task = interruptTask(taskId, 'paused');
   publishTaskStatus(task);
   broker.publish({ type: 'task.paused', taskId });
 }
@@ -484,6 +512,8 @@ export async function resumeTask(taskId: string): Promise<void> {
 export async function archiveTask(taskId: string): Promise<void> {
   const task = getTask(taskId);
   if (!task) throw new Error(`Task ${taskId} not found`);
+  // Nothing keeps running out of sight once it's archived
+  if (ACTIVE_STATUSES.includes(task.status)) await stopTask(taskId);
   updateTask(taskId, { archived: true });
   broker.publish({ type: 'task.archived', taskId, archived: true });
 }
@@ -665,7 +695,7 @@ async function runTask(task: Task, repo: Repository, userMessage: string, opts: 
     }
 
     // Validate
-    await runValidation(task.id, repo, workDir, sessionRef);
+    await runValidation(task.id, repo, workDir, sessionRef, controller.signal);
 
   } catch (err: unknown) {
     if (controller.signal.aborted) return;
@@ -707,8 +737,8 @@ function detectBranchType(message: string): 'feature' | 'fix' | 'refactor' {
   return 'feature';
 }
 
-async function runValidation(taskId: string, repo: Repository, workDir: string, sessionRef?: string): Promise<void> {
-  const db = getDb();
+async function runValidation(taskId: string, repo: Repository, workDir: string, sessionRef?: string, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return;
 
   // A reply that only answered a question — no file touched, nothing committed —
   // isn't work: skip lint/test/build and put the task back where it was.
@@ -756,7 +786,9 @@ async function runValidation(taskId: string, repo: Repository, workDir: string, 
   for (const cmd of validationCmds) {
     try {
       execSync(cmd, { cwd: workDir, stdio: 'pipe', timeout: 120_000 });
+      if (signal?.aborted) return;
     } catch (e: unknown) {
+      if (signal?.aborted) return;
       const errMsg = e instanceof Error ? e.message : String(e);
       logger.warn(`Validation failed for task ${taskId}: ${cmd}`, errMsg);
 
@@ -779,8 +811,10 @@ async function runValidation(taskId: string, repo: Repository, workDir: string, 
             updateSession(sessionRef, { claudeSessionId: claudeSessId });
           }
         },
+        signal,
       });
 
+      if (signal?.aborted) return;
       if (!result.success) {
         const failed = updateTask(taskId, { status: 'failed', completedAt: new Date().toISOString() });
         syncRepoStatus(repo.id);
@@ -788,7 +822,7 @@ async function runValidation(taskId: string, repo: Repository, workDir: string, 
         broker.publish({ type: 'task.failed', taskId, error: 'Validation failed' });
         return;
       }
-      await runValidation(taskId, repo, workDir, sessionRef);
+      await runValidation(taskId, repo, workDir, sessionRef, signal);
       return;
     }
   }
@@ -801,9 +835,11 @@ export async function deleteTask(taskId: string): Promise<void> {
   const task = getTask(taskId);
   if (!task) throw new Error(`Task ${taskId} not found`);
 
-  const active = ['working', 'validating', 'queued', 'committing', 'merging', 'resolving_conflict'];
-  if (active.includes(task.status)) {
-    throw new Error('Cannot delete an active task — stop it first');
+  // Deleting a running session stops it first, and waits for Claude to let go
+  // of the worktree before it's removed
+  if (ACTIVE_STATUSES.includes(task.status)) {
+    interruptTask(taskId, 'stopped');
+    await waitForRunToSettle(task.sessionRef);
   }
 
   // Clean up worktree if it exists and no other tasks use this session
@@ -827,6 +863,7 @@ export async function deleteTask(taskId: string): Promise<void> {
   deleteTranscriptForTask(taskId);
   db.prepare('DELETE FROM tasks WHERE id = ?').run(taskId);
 
+  syncRepoStatus(task.repoId);
   broker.publish({ type: 'task.deleted', taskId });
   logger.info(`Deleted task ${taskId}`);
 }
@@ -933,9 +970,14 @@ export async function approveTask(taskId: string): Promise<void> {
     }
   }
 
+  // Registered like any run so pause/stop/delete can halt the approval too
+  const controller = new AbortController();
+  activeAbortControllers.set(taskId, controller);
+
   try {
     const workDir = task.worktreePath ?? repo.path;
     commit(workDir, task.commitMessage ?? task.title);
+    if (controller.signal.aborted) return;
 
     if (branch) {
       updateTask(taskId, { status: 'merging' });
@@ -962,8 +1004,10 @@ export async function approveTask(taskId: string): Promise<void> {
           onStatusUpdate: (status) => {
             broker.publish({ type: 'task.status', taskId, status: 'resolving_conflict', message: status });
           },
+          signal: controller.signal,
         });
 
+        if (controller.signal.aborted) return;
         if (!result.success) {
           const failed = updateTask(taskId, { status: 'failed', completedAt: new Date().toISOString() });
           publishTaskStatus(failed, 'Merge conflict could not be resolved');
@@ -982,6 +1026,7 @@ export async function approveTask(taskId: string): Promise<void> {
         logger.warn(`Push failed for task ${taskId}`, e);
       }
     }
+    if (controller.signal.aborted) return;
 
     // Clean up worktree only if no other tasks use this session
     if (task.worktreePath && branch && task.sessionRef) {
@@ -1007,11 +1052,14 @@ export async function approveTask(taskId: string): Promise<void> {
     broker.publish({ type: 'task.done', task: done });
 
   } catch (err: unknown) {
+    if (controller.signal.aborted) return;
     const msg = err instanceof Error ? err.message : String(err);
     logger.error(`Approval failed for task ${taskId}`, err);
     const failed = updateTask(taskId, { status: 'failed', completedAt: new Date().toISOString() });
     syncRepoStatus(repo.id);
     publishTaskStatus(failed, msg);
     broker.publish({ type: 'task.failed', taskId, error: msg });
+  } finally {
+    if (activeAbortControllers.get(taskId) === controller) activeAbortControllers.delete(taskId);
   }
 }

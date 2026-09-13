@@ -4,8 +4,18 @@ import fs from 'fs';
 import { logger } from '../utils/logger';
 import { getConfig } from '../utils/config';
 
+// Git runs synchronously, so a command waiting on input (a credential prompt,
+// a lock) would freeze the whole server — never prompt, and give up eventually.
+const GIT_TIMEOUT_MS = 120_000;
+
 function run(cmd: string, cwd: string): string {
-  return execSync(cmd, { cwd, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+  return execSync(cmd, {
+    cwd,
+    encoding: 'utf8',
+    stdio: ['pipe', 'pipe', 'pipe'],
+    timeout: GIT_TIMEOUT_MS,
+    env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never' },
+  }).trim();
 }
 
 function runSafe(cmd: string, cwd: string): string {
@@ -78,6 +88,13 @@ export function mergeIntoMain(repoPath: string, branch: string): void {
   run(`git checkout ${mainBranch}`, repoPath);
   run(`git merge --no-ff ${branch} -m "merge ${branch}"`, repoPath);
   logger.info(`Merged ${branch} into ${mainBranch} in ${repoPath}`);
+}
+
+/** Back out of a half-finished merge so the checkout isn't left conflicted. */
+export function abortMerge(repoPath: string): void {
+  if (!runSafe('git rev-parse -q --verify MERGE_HEAD', repoPath)) return;
+  runSafe('git merge --abort', repoPath);
+  logger.info(`Aborted in-progress merge in ${repoPath}`);
 }
 
 export function pushMain(repoPath: string): void {
