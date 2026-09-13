@@ -1,6 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import type { Repository, Task, Session } from '@claudectrl/shared';
-import type { ParsedOutput } from '../utils/parseOutput';
+import type { Repository, Task, Session, TranscriptEntry } from '@claudectrl/shared';
 import { SessionPanel } from '../components/SessionPanel';
 import { useLayoutStore } from '../hooks/useLayoutStore';
 import type { PanelLayout } from '../hooks/useLayoutStore';
@@ -11,14 +10,19 @@ interface Props {
   tasks: Task[];
   sessions: Session[];
   onBack: () => void;
-  getTaskParsed: (taskId: string) => ParsedOutput;
+  getTranscript: (taskIds: string[]) => TranscriptEntry[];
+  loadTranscript: (repoId: string, taskId: string) => void;
 }
 
-export function ProjectView({ repo, tasks, sessions, onBack, getTaskParsed }: Props) {
+export function ProjectView({ repo, tasks, sessions, onBack, getTranscript, loadTranscript }: Props) {
   const draftKey = `draft:${repo.id}`;
   const modelKey = 'new-session-model';
+  const worktreeKey = 'new-session-worktree';
   const [newTaskInput, setNewTaskInput] = useState(() => localStorage.getItem(draftKey) ?? '');
   const [newTaskModel, setNewTaskModel] = useState(() => localStorage.getItem(modelKey) ?? 'default');
+  // New sessions get their own worktree + branch by default; turn it off to work
+  // straight in the checkout (quick questions, or changes you want in place).
+  const [useWorktree, setUseWorktree] = useState(() => localStorage.getItem(worktreeKey) !== 'false');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showArchived, setShowArchived] = useState(true);
@@ -155,6 +159,19 @@ export function ProjectView({ repo, tasks, sessions, onBack, getTaskParsed }: Pr
     return Math.max(max, l.y + l.height + 40);
   }, 400);
 
+  // Every task whose transcript a visible card needs (a session's whole queue)
+  function sessionTaskIds(task: Task): string[] {
+    const inSession = task.sessionRef ? tasksBySession.get(task.sessionRef) : undefined;
+    return (inSession && inSession.length ? inSession : [task]).map(t => t.id);
+  }
+  const visibleTaskIds = displayTasks.flatMap(sessionTaskIds);
+  const visibleKey = visibleTaskIds.join(',');
+
+  // Pull each one's stored transcript once, so a reload shows the full session
+  useEffect(() => {
+    for (const id of visibleKey ? visibleKey.split(',') : []) loadTranscript(repo.id, id);
+  }, [visibleKey, repo.id, loadTranscript]);
+
   // Mobile: active tab
   const activeTask = displayTasks.find(t => t.id === activeTabId) ?? displayTasks[0];
 
@@ -164,7 +181,7 @@ export function ProjectView({ repo, tasks, sessions, onBack, getTaskParsed }: Pr
     setSubmitting(true);
     setError(null);
     try {
-      await api.repos.submitTask(repo.id, msg, undefined, newTaskModel);
+      await api.repos.submitTask(repo.id, msg, { model: newTaskModel, useWorktree });
       setNewTaskInput('');
       localStorage.removeItem(draftKey);
     } catch (e) {
@@ -176,7 +193,7 @@ export function ProjectView({ repo, tasks, sessions, onBack, getTaskParsed }: Pr
 
   const handleAddToQueue = async (sessionRef: string, message: string) => {
     try {
-      await api.repos.submitTask(repo.id, message, sessionRef);
+      await api.repos.submitTask(repo.id, message, { sessionRef });
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to queue task');
     }
@@ -277,6 +294,33 @@ export function ProjectView({ repo, tasks, sessions, onBack, getTaskParsed }: Pr
             <option value="sonnet">Sonnet</option>
             <option value="haiku">Haiku</option>
           </select>
+
+          {/* Worktree toggle — same shape as the model picker, since it's the
+              other thing you choose before a session starts */}
+          <button
+            onClick={() => {
+              const next = !useWorktree;
+              setUseWorktree(next);
+              localStorage.setItem(worktreeKey, String(next));
+            }}
+            disabled={submitting}
+            title={useWorktree
+              ? 'New worktree: this session gets its own branch and directory'
+              : 'In repo: this session works directly in the checkout, on its current branch'}
+            style={{
+              fontSize: 12, padding: '10px 12px', flexShrink: 0, whiteSpace: 'nowrap',
+              borderRadius: 'var(--r-xl)',
+              boxShadow: useWorktree ? 'var(--shadow-inset)' : 'var(--shadow-raised-xs)',
+              background: 'var(--c-bg)',
+              color: useWorktree ? 'var(--c-accent)' : 'var(--c-subtle)',
+              fontFamily: 'var(--font)', fontWeight: 500,
+              display: 'flex', alignItems: 'center', gap: 6,
+            }}
+          >
+            <span style={{ fontSize: 11 }}>{useWorktree ? '⎇' : '⌂'}</span>
+            {useWorktree ? 'New worktree' : 'In repo'}
+          </button>
+
           <input
             value={newTaskInput}
             onChange={(e) => { setNewTaskInput(e.target.value); localStorage.setItem(draftKey, e.target.value); }}
@@ -349,7 +393,7 @@ export function ProjectView({ repo, tasks, sessions, onBack, getTaskParsed }: Pr
                 <SessionPanel
                   task={activeTask}
                   repoId={repo.id}
-                  parsed={getTaskParsed(activeTask.id)}
+                  entries={getTranscript(sessionTaskIds(activeTask))}
                   queuedTasks={activeQueued}
                   onAddToQueue={handleAddToQueue}
                 />
@@ -384,7 +428,7 @@ export function ProjectView({ repo, tasks, sessions, onBack, getTaskParsed }: Pr
                   <SessionPanel
                     task={task}
                     repoId={repo.id}
-                    parsed={getTaskParsed(task.id)}
+                    entries={getTranscript(sessionTaskIds(task))}
                     queuedTasks={queued}
                     onAddToQueue={handleAddToQueue}
                     onDragHandleMouseDown={handleDragHeaderMouseDown(task.id, idx)}

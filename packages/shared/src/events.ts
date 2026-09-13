@@ -1,6 +1,6 @@
 // WebSocket event protocol between server and client
 
-import type { Task, Repository, Session, Message, Decision, UsageSnapshot, Preview } from './types';
+import type { Task, Repository, Session, Message, Decision, UsageSnapshot, Preview, TranscriptEntry } from './types';
 
 export type ServerEvent =
   | { type: 'task.created'; task: Task }
@@ -13,7 +13,11 @@ export type ServerEvent =
   | { type: 'task.paused'; taskId: string }
   | { type: 'task.archived'; taskId: string; archived: boolean }
   | { type: 'task.deleted'; taskId: string }
-  | { type: 'task.output'; taskId: string; line: string }
+  // Compressed transcript feed — one entry per narration paragraph or collapsed
+  // tool activity. An entry with an already-seen `seq` is an update to that line
+  // (e.g. a second consecutive Read bumping its count), not a new line.
+  | { type: 'task.transcript'; entry: TranscriptEntry }
+  | { type: 'task.transcript_cleared'; taskId: string; sessionRef: string | null }
   | { type: 'session.started'; session: Session }
   | { type: 'session.resumed'; session: Session }
   | { type: 'session.stopped'; sessionId: string }

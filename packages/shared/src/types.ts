@@ -47,6 +47,8 @@ export interface Task {
   commitMessage: string | null;
   branchSlug: string | null;
   model: string | null;
+  /** False when the session works directly in the repo checkout instead of a worktree */
+  useWorktree: boolean;
   archived: boolean;
   createdAt: string;
   updatedAt: string;
@@ -125,4 +127,44 @@ export interface AppSettings {
   voiceEnabled: boolean;
   notificationsEnabled: boolean;
   vercelEnabled: boolean;
+}
+
+/**
+ * One line in a session's compressed transcript.
+ *
+ * The transcript is a deterministic, filtered projection of Claude's raw
+ * stream-json output — Claude's own words are preserved verbatim, tool
+ * execution is collapsed to a single line, and tool internals (diffs,
+ * command strings, stdout/stderr) are dropped entirely.
+ */
+export type TranscriptKind =
+  | 'user'    // a message you sent (right side)
+  | 'text'    // Claude's narration / final answer (left side)
+  | 'tool'    // one collapsed tool activity line
+  | 'turn'    // end-of-response footer: duration + tokens
+  | 'error'   // a run that failed
+  | 'notice'; // system note, e.g. "Context cleared"
+
+export interface TranscriptEntry {
+  /** Globally monotonic — also the ordering key and the client-side identity */
+  seq: number;
+  taskId: string;
+  sessionRef: string | null;
+  kind: TranscriptKind;
+  /** Prose for user/text/error/notice entries */
+  text: string | null;
+  /** Tool identity for 'tool' entries: 'Update' | 'Write' | 'Read' | 'Bash' | ... */
+  label: string | null;
+  /** File the tool touched, repo-relative where known */
+  path: string | null;
+  /** Sub-line under a tool, e.g. "Added 2 lines, removed 2 lines" */
+  detail: string | null;
+  /** Same edit size as `detail`, as numbers, for the card's totals */
+  linesAdded: number | null;
+  linesRemoved: number | null;
+  /** How many consecutive identical activities this line stands for */
+  count: number | null;
+  durationMs: number | null;
+  tokens: number | null;
+  createdAt: string;
 }

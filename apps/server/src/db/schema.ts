@@ -156,6 +156,41 @@ export function runMigrations(db: Database.Database): void {
         ALTER TABLE tasks ADD COLUMN model TEXT;
       `,
     },
+    {
+      name: '005_transcript_entries',
+      sql: `
+        CREATE TABLE IF NOT EXISTS transcript_entries (
+          seq INTEGER PRIMARY KEY AUTOINCREMENT,
+          task_id TEXT NOT NULL,
+          session_ref TEXT,
+          kind TEXT NOT NULL,
+          text TEXT,
+          label TEXT,
+          path TEXT,
+          detail TEXT,
+          count INTEGER,
+          duration_ms INTEGER,
+          tokens INTEGER,
+          created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_transcript_task_id ON transcript_entries(task_id);
+        CREATE INDEX IF NOT EXISTS idx_transcript_session_ref ON transcript_entries(session_ref);
+      `,
+    },
+    {
+      name: '007_task_use_worktree',
+      sql: `
+        ALTER TABLE tasks ADD COLUMN use_worktree INTEGER NOT NULL DEFAULT 1;
+      `,
+    },
+    {
+      name: '008_transcript_line_counts',
+      sql: `
+        ALTER TABLE transcript_entries ADD COLUMN lines_added INTEGER;
+        ALTER TABLE transcript_entries ADD COLUMN lines_removed INTEGER;
+      `,
+    },
   ];
 
   const applied = new Set(

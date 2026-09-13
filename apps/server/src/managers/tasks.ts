@@ -8,6 +8,22 @@ import { getConfig, loadRepoConfig } from '../utils/config';
 import { logger } from '../utils/logger';
 import { runClaude } from './claude';
 import { refreshUsage } from './usage';
+import { extractCommitMetadata } from '../utils/claudeText';
+import {
+  insertMessage,
+  noteReplyBaseline,
+  consumeReplyBaseline,
+  clearReplyBaseline,
+} from './conversation';
+import {
+  appendUserMessage,
+  appendNotice,
+  appendError,
+  attachSessionRef,
+  clearTranscript,
+  deleteTranscriptForTask,
+  endTranscriptRun,
+} from './transcript';
 import {
   getCurrentBranch,
   getDefaultBranch,
@@ -27,7 +43,9 @@ const activeAbortControllers = new Map<string, AbortController>();
 
 // Sessions with a task currently executing — guards against dequeuing a
 // queued task while another task in the same session is still running
-const sessionRunning = new Set<string>();
+// Value is the owning run's token, so a run that dies late can't release a
+// session another run has already claimed.
+const sessionRunning = new Map<string, symbol>();
 
 /**
  * Pick up the next queued task in a session, if nothing is already running
@@ -44,8 +62,7 @@ function scheduleNextInSession(sessionRef: string, repo: Repository): void {
   if (!row) return;
 
   const nextTask = dbRowToTask(row);
-  sessionRunning.add(sessionRef);
-  runTask(nextTask, repo, nextTask.lastMessage ?? nextTask.title, false, sessionRef).catch((err) => {
+  runTask(nextTask, repo, nextTask.lastMessage ?? nextTask.title, { sessionRef }).catch((err) => {
     logger.error(`Queued task ${nextTask.id} failed unexpectedly`, err);
   });
 }
@@ -65,6 +82,7 @@ function dbRowToTask(row: Record<string, unknown>): Task {
     commitMessage: row.commit_message as string | null,
     branchSlug: row.branch_slug as string | null,
     model: row.model as string | null,
+    useWorktree: row.use_worktree === undefined ? true : Boolean(row.use_worktree),
     archived: Boolean(row.archived),
     createdAt: row.created_at as string,
     updatedAt: row.updated_at as string,
@@ -223,31 +241,6 @@ function publishTaskStatus(task: Task, message?: string): void {
   syncRepoStatus(task.repoId);
 }
 
-/**
- * Pull the trailing `COMMIT:` / `BRANCH:` metadata lines that the task prompt
- * asks Claude to append, and strip them out of the text shown to the user.
- */
-function extractCommitMetadata(text: string): { commitMessage: string | null; branchSlug: string | null; cleaned: string } {
-  const commitMatch = text.match(/^COMMIT:\s*(.+)$/im);
-  const branchMatch = text.match(/^BRANCH:\s*(.+)$/im);
-
-  const cleaned = text
-    .replace(/^COMMIT:\s*.+$/im, '')
-    .replace(/^BRANCH:\s*.+$/im, '')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
-
-  const commitMessage = commitMatch
-    ? commitMatch[1].trim().replace(/^["'`]|["'`]$/g, '').slice(0, 72)
-    : null;
-
-  const branchSlug = branchMatch
-    ? branchMatch[1].trim().toLowerCase().replace(/[^a-z0-9\s-]/g, '').trim().replace(/\s+/g, '-').slice(0, 40)
-    : null;
-
-  return { commitMessage: commitMessage || null, branchSlug: branchSlug || null, cleaned };
-}
-
 function loadPrompt(promptPath: string): string {
   const resolved = path.isAbsolute(promptPath) ? promptPath : path.resolve(process.cwd(), promptPath);
   if (fs.existsSync(resolved)) return fs.readFileSync(resolved, 'utf8');
@@ -298,12 +291,25 @@ export function recoverInterruptedTasks(): void {
   }
 }
 
+export interface CreateTaskOptions {
+  /** Join this session's queue instead of starting a new session */
+  sessionRef?: string;
+  model?: string;
+  /**
+   * Isolate the work in its own git worktree + branch (the default). When false
+   * the session works directly in the repo checkout on its current branch —
+   * for quick questions, or when you want the changes where you can see them.
+   */
+  useWorktree?: boolean;
+}
+
 /**
  * Create a task, optionally within an existing session (for queuing).
  * If sessionRef is provided, the task joins that session's queue.
- * Otherwise, a new session + worktree is created.
+ * Otherwise a new session is created — with a worktree unless opted out.
  */
-export async function createTask(repoId: string, userMessage: string, sessionRef?: string, model?: string): Promise<Task> {
+export async function createTask(repoId: string, userMessage: string, opts: CreateTaskOptions = {}): Promise<Task> {
+  const { sessionRef, model, useWorktree = true } = opts;
   const db = getDb();
   const repo = getRepo(repoId);
   if (!repo) throw new Error(`Repository ${repoId} not found`);
@@ -312,15 +318,12 @@ export async function createTask(repoId: string, userMessage: string, sessionRef
   const title = userMessage;
 
   db.prepare(`
-    INSERT INTO tasks (id, repo_id, title, status, last_message, session_ref, model)
-    VALUES (?, ?, ?, 'queued', ?, ?, ?)
-  `).run(taskId, repoId, title, userMessage, sessionRef ?? null, model ?? null);
+    INSERT INTO tasks (id, repo_id, title, status, last_message, session_ref, model, use_worktree)
+    VALUES (?, ?, ?, 'queued', ?, ?, ?, ?)
+  `).run(taskId, repoId, title, userMessage, sessionRef ?? null, model ?? null, useWorktree ? 1 : 0);
 
-  // Save user message
-  db.prepare(`
-    INSERT INTO messages (id, task_id, role, content)
-    VALUES (?, ?, 'user', ?)
-  `).run(newId(), taskId, userMessage);
+  insertMessage(taskId, 'user', userMessage);
+  appendUserMessage(taskId, userMessage);
 
   const task = getTask(taskId)!;
   broker.publish({ type: 'task.created', task });
@@ -329,7 +332,7 @@ export async function createTask(repoId: string, userMessage: string, sessionRef
     // Queue within existing session — only starts if nothing else is running for it
     scheduleNextInSession(sessionRef, repo);
   } else {
-    // New independent task — no lock needed, creates its own worktree
+    // New independent session — creates its own worktree unless opted out
     runTask(task, repo, userMessage).catch((err) => {
       logger.error(`Task ${taskId} failed unexpectedly`, err);
     });
@@ -345,17 +348,93 @@ export async function submitFeedback(taskId: string, userMessage: string): Promi
   const repo = getRepo(task.repoId);
   if (!repo) throw new Error(`Repo not found`);
 
-  db.prepare(`
-    INSERT INTO messages (id, task_id, role, content)
-    VALUES (?, ?, 'user', ?)
-  `).run(newId(), taskId, userMessage);
+  insertMessage(taskId, 'user', userMessage);
+  appendUserMessage(taskId, userMessage);
+
+  // Snapshot the worktree first: if this reply only answers a question and
+  // changes no code, it shouldn't drag a validation cycle or a review behind it.
+  noteReplyBaseline(task);
 
   const updated = updateTask(taskId, { status: 'working', lastMessage: userMessage });
   publishTaskStatus(updated, 'Resuming work...');
 
-  runTask(updated, repo, userMessage, true).catch((err) => {
+  runTask(updated, repo, userMessage, { isResume: true }).catch((err) => {
     logger.error(`Task ${taskId} feedback run failed`, err);
   });
+}
+
+/**
+ * Send a message into a session the way the Claude CLI does: if Claude is
+ * mid-response it is interrupted, and the message becomes the next thing it
+ * answers. Use the queue (a `/queue`-prefixed message) when you'd rather it
+ * finish first.
+ */
+export async function interruptWithMessage(taskId: string, userMessage: string): Promise<void> {
+  const task = getTask(taskId);
+  if (!task) throw new Error(`Task ${taskId} not found`);
+
+  const controller = activeAbortControllers.get(taskId);
+  if (controller) {
+    controller.abort();
+    activeAbortControllers.delete(taskId);
+    // Park it first: the aborted run's cleanup must not dequeue the next
+    // queued task while we're taking over the session ourselves.
+    updateTask(taskId, { status: 'paused' });
+    appendNotice(taskId, 'Interrupted');
+    await waitForRunToSettle(task.sessionRef);
+  }
+
+  await submitFeedback(taskId, userMessage);
+}
+
+/** Give the killed Claude process a moment to exit and release the session. */
+async function waitForRunToSettle(sessionRef: string | null): Promise<void> {
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    if (!sessionRef || !sessionRunning.has(sessionRef)) {
+      await new Promise((r) => setTimeout(r, 150));
+      return;
+    }
+    await new Promise((r) => setTimeout(r, 100));
+  }
+}
+
+/**
+ * The Clear button: `/clear` on the live Claude session, then forget the
+ * session id so the next message definitely starts with an empty context,
+ * and wipe the card's transcript. The branch and worktree are untouched —
+ * you keep the work, you just drop the conversation.
+ */
+export async function clearSessionContext(taskId: string): Promise<void> {
+  const task = getTask(taskId);
+  if (!task) throw new Error(`Task ${taskId} not found`);
+  if (['working', 'validating', 'committing', 'merging', 'resolving_conflict'].includes(task.status)) {
+    throw new Error('Stop or pause the session before clearing it');
+  }
+  const repo = getRepo(task.repoId);
+  if (!repo) throw new Error('Repo not found');
+
+  if (task.sessionId) {
+    const workDir = task.worktreePath && fs.existsSync(task.worktreePath) ? task.worktreePath : repo.path;
+    try {
+      await runClaude({
+        taskId,
+        workDir,
+        prompt: '/clear',
+        sessionId: task.sessionId,
+        model: task.model ?? undefined,
+      });
+    } catch (e) {
+      logger.warn(`/clear on session for task ${taskId} failed, detaching anyway`, e);
+    }
+  }
+
+  updateTask(taskId, { sessionId: null });
+  if (task.sessionRef) updateSession(task.sessionRef, { claudeSessionId: null });
+
+  clearTranscript(taskId);
+  appendNotice(taskId, 'Context cleared — the next message starts fresh on this branch');
+  logger.info(`Cleared Claude context for task ${taskId}`);
 }
 
 export async function stopTask(taskId: string): Promise<void> {
@@ -397,7 +476,7 @@ export async function resumeTask(taskId: string): Promise<void> {
   const updated = updateTask(taskId, { status: 'working', completedAt: null });
   publishTaskStatus(updated, 'Resuming...');
 
-  runTask(updated, repo, message, true).catch((err) => {
+  runTask(updated, repo, message, { isResume: true }).catch((err) => {
     logger.error(`Task ${taskId} resume failed`, err);
   });
 }
@@ -416,7 +495,30 @@ export async function unarchiveTask(taskId: string): Promise<void> {
   broker.publish({ type: 'task.archived', taskId, archived: false });
 }
 
-async function runTask(task: Task, repo: Repository, userMessage: string, isResume = false, sessionRef?: string): Promise<void> {
+/** Register the session a brand-new task belongs to, and adopt its transcript. */
+function createSessionRecord(repo: Repository, task: Task, workDir: string, branch: string | null): string {
+  const sessId = newId();
+  getDb().prepare(`
+    INSERT INTO sessions (id, repo_id, task_id, claude_session_id, status, title, worktree_path, branch)
+    VALUES (?, ?, ?, NULL, 'active', ?, ?, ?)
+  `).run(sessId, repo.id, task.id, task.title, workDir !== repo.path ? workDir : null, branch);
+  updateTask(task.id, { sessionRef: sessId });
+  // The first user message was stored before the session existed
+  attachSessionRef(task.id, sessId);
+  return sessId;
+}
+
+interface RunTaskOptions {
+  /** Continue an existing Claude session in the same worktree */
+  isResume?: boolean;
+  /** This run is a queued task picked up inside an existing session */
+  sessionRef?: string;
+}
+
+async function runTask(task: Task, repo: Repository, userMessage: string, opts: RunTaskOptions = {}): Promise<void> {
+  const { isResume = false } = opts;
+  const useWorktree = task.useWorktree;
+  let sessionRef = opts.sessionRef;
   const db = getDb();
   const controller = new AbortController();
   activeAbortControllers.set(task.id, controller);
@@ -424,7 +526,9 @@ async function runTask(task: Task, repo: Repository, userMessage: string, isResu
   // Track which session this run belongs to so completion can safely
   // hand off to the next queued task (set below once known, for brand-new tasks)
   let effectiveSessionRef = task.sessionRef ?? sessionRef;
-  if (effectiveSessionRef) sessionRunning.add(effectiveSessionRef);
+  // Identifies this specific run for as long as it holds the session
+  const runToken = Symbol('claude-run');
+  if (effectiveSessionRef) sessionRunning.set(effectiveSessionRef, runToken);
 
   try {
     let workDir = repo.path;
@@ -432,8 +536,9 @@ async function runTask(task: Task, repo: Repository, userMessage: string, isResu
     let claudeSessionIdToResume: string | undefined;
 
     if (isResume) {
-      // Resume: reuse existing worktree + session
-      workDir = task.worktreePath ?? repo.path;
+      // Resume: reuse existing worktree + session. The worktree may have been
+      // cleaned up after an approval, so fall back to the repo checkout.
+      workDir = task.worktreePath && fs.existsSync(task.worktreePath) ? task.worktreePath : repo.path;
       branch = task.branch;
       claudeSessionIdToResume = task.sessionId ?? undefined;
     } else if (sessionRef) {
@@ -447,8 +552,8 @@ async function runTask(task: Task, repo: Repository, userMessage: string, isResu
         claudeSessionIdToResume = session.claudeSessionId ?? undefined;
         updateTask(task.id, { worktreePath: workDir !== repo.path ? workDir : null, branch, sessionRef });
       }
-    } else {
-      // New task: create branch + worktree + session
+    } else if (useWorktree) {
+      // New isolated session: its own branch + worktree
       const branchType = detectBranchType(userMessage);
       const slug = userMessage.slice(0, 20).toLowerCase().replace(/[^a-z0-9 ]/g, '').trim().replace(/\s+/g, '-');
       branch = getBranchName(branchType, slug);
@@ -479,17 +584,19 @@ async function runTask(task: Task, repo: Repository, userMessage: string, isResu
         branch = null;
       }
 
-      // Create the session record
-      const sessId = newId();
-      db.prepare(`
-        INSERT INTO sessions (id, repo_id, task_id, claude_session_id, status, title, worktree_path, branch)
-        VALUES (?, ?, ?, NULL, 'active', ?, ?, ?)
-      `).run(sessId, repo.id, task.id, task.title, workDir !== repo.path ? workDir : null, branch);
-      updateTask(task.id, { sessionRef: sessId });
-      // Update local reference for this run
-      sessionRef = sessId;
-      effectiveSessionRef = sessId;
-      sessionRunning.add(sessId);
+      sessionRef = createSessionRecord(repo, task, workDir, branch);
+      effectiveSessionRef = sessionRef;
+      sessionRunning.set(sessionRef, runToken);
+    } else {
+      // New session, but working straight in the repo checkout on its current
+      // branch — no worktree, no branch of its own.
+      workDir = repo.path;
+      branch = null;
+      logger.info(`Task ${task.id} runs in the repo checkout (worktree opted out)`);
+
+      sessionRef = createSessionRecord(repo, task, workDir, branch);
+      effectiveSessionRef = sessionRef;
+      sessionRunning.set(sessionRef, runToken);
     }
 
     const updatedTask = updateTask(task.id, {
@@ -539,10 +646,7 @@ async function runTask(task: Task, repo: Repository, userMessage: string, isResu
       const { commitMessage, branchSlug, cleaned } = extractCommitMetadata(result.resultText);
       const displayText = cleaned || result.resultText;
 
-      db.prepare(`
-        INSERT INTO messages (id, task_id, role, content)
-        VALUES (?, ?, 'assistant', ?)
-      `).run(newId(), task.id, displayText);
+      insertMessage(task.id, 'assistant', displayText);
 
       updateTask(task.id, {
         lastResult: displayText,
@@ -555,6 +659,7 @@ async function runTask(task: Task, repo: Repository, userMessage: string, isResu
       const failed = updateTask(task.id, { status: 'failed', completedAt: new Date().toISOString() });
       syncRepoStatus(repo.id);
       publishTaskStatus(failed, result.error);
+      appendError(task.id, result.error ?? 'Unknown error');
       broker.publish({ type: 'task.failed', taskId: task.id, error: result.error ?? 'Unknown error' });
       return;
     }
@@ -569,12 +674,23 @@ async function runTask(task: Task, repo: Repository, userMessage: string, isResu
     const failed = updateTask(task.id, { status: 'failed', completedAt: new Date().toISOString() });
     syncRepoStatus(task.repoId);
     publishTaskStatus(failed, msg);
+    appendError(task.id, msg);
     broker.publish({ type: 'task.failed', taskId: task.id, error: msg });
   } finally {
     activeAbortControllers.delete(task.id);
+    endTranscriptRun(task.id);
     refreshUsage().catch(() => {});
 
-    if (effectiveSessionRef) {
+    // A run that never reached validation must not leave its reply snapshot
+    // behind for some later run to consume.
+    const settled = getTask(task.id);
+    if (settled && ['failed', 'paused', 'stopped'].includes(settled.status)) {
+      clearReplyBaseline(task.id);
+    }
+
+    // Only release the session if this run still owns it — an interrupted run
+    // can finish dying long after its replacement has taken over.
+    if (effectiveSessionRef && sessionRunning.get(effectiveSessionRef) === runToken) {
       sessionRunning.delete(effectiveSessionRef);
       const finalTask = getTask(task.id);
       if (finalTask && !['failed', 'paused', 'stopped'].includes(finalTask.status)) {
@@ -593,6 +709,22 @@ function detectBranchType(message: string): 'feature' | 'fix' | 'refactor' {
 
 async function runValidation(taskId: string, repo: Repository, workDir: string, sessionRef?: string): Promise<void> {
   const db = getDb();
+
+  // A reply that only answered a question — no file touched, nothing committed —
+  // isn't work: skip lint/test/build and put the task back where it was.
+  const reply = consumeReplyBaseline(taskId, workDir);
+  if (reply?.unchanged) {
+    const restored = updateTask(taskId, {
+      status: reply.priorStatus === 'done' ? 'done' : 'ready_for_review',
+    });
+    syncRepoStatus(repo.id);
+    publishTaskStatus(restored);
+    broker.publish(restored.status === 'done'
+      ? { type: 'task.done', task: restored }
+      : { type: 'task.ready_for_review', task: restored });
+    return;
+  }
+
   const cfg = getConfig();
   const repoCfg = loadRepoConfig(repo.path);
   const commands = repoCfg.commands ?? cfg.commands ?? {};
@@ -692,6 +824,7 @@ export async function deleteTask(taskId: string): Promise<void> {
   }
 
   db.prepare('DELETE FROM messages WHERE task_id = ?').run(taskId);
+  deleteTranscriptForTask(taskId);
   db.prepare('DELETE FROM tasks WHERE id = ?').run(taskId);
 
   broker.publish({ type: 'task.deleted', taskId });
@@ -736,8 +869,12 @@ export async function retryTask(taskId: string): Promise<Task> {
     return getTask(taskId)!;
   }
 
-  // No session ever started (e.g. failed before Claude ran) — start fresh
-  return createTask(task.repoId, message, undefined, task.model ?? undefined);
+  // No session ever started (e.g. failed before Claude ran) — start fresh,
+  // keeping the same worktree preference as the task being retried
+  return createTask(task.repoId, message, {
+    model: task.model ?? undefined,
+    useWorktree: task.useWorktree,
+  });
 }
 
 async function markReadyForReview(taskId: string, repo: Repository): Promise<void> {

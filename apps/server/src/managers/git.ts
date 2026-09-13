@@ -121,6 +121,20 @@ export function isCleanState(repoPath: string): boolean {
   return status.length === 0;
 }
 
+/**
+ * HEAD sha + the list of dirty files. Two identical fingerprints mean nothing
+ * about the worktree moved — used to tell a reply that only answered a question
+ * apart from one that actually changed code.
+ * Returns null when the directory isn't a usable git worktree (e.g. it was
+ * already cleaned up after a merge), in which case no comparison is possible.
+ */
+export function fingerprintWorktree(dir: string): string | null {
+  if (!fs.existsSync(dir)) return null;
+  const head = runSafe('git rev-parse HEAD', dir);
+  if (!head) return null;
+  return `${head}\n${runSafe('git status --porcelain', dir)}`;
+}
+
 export function stashChanges(repoPath: string): boolean {
   const result = runSafe('git stash', repoPath);
   return result.includes('Saved');

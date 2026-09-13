@@ -1,3 +1,5 @@
+import type { TranscriptEntry } from '@claudectrl/shared';
+
 const BASE = (() => {
   const { hostname, port } = window.location;
   const serverPort = port === '5173' ? '4173' : port;
@@ -32,14 +34,22 @@ export const api = {
     tasks: (id: string) => api.get(`/api/repos/${id}/tasks`),
     sessions: (id: string) => api.get(`/api/repos/${id}/sessions`),
     messages: (id: string, taskId: string) => api.get(`/api/repos/${id}/tasks/${taskId}/messages`),
+    transcript: (id: string, taskId: string) =>
+      api.get<TranscriptEntry[]>(`/api/repos/${id}/tasks/${taskId}/transcript`),
     register: (path: string) => api.post('/api/repos/register', { path }),
     clone: (owner: string, repo: string) => api.post('/api/repos/clone', { owner, repo }),
     remove: (id: string) => api.delete(`/api/repos/${id}`),
     fetch: (id: string) => api.post(`/api/repos/${id}/fetch`),
-    submitTask: (id: string, message: string, sessionRef?: string, model?: string) =>
-      api.post(`/api/repos/${id}/tasks`, { message, sessionRef, model }),
+    submitTask: (id: string, message: string, opts: { sessionRef?: string; model?: string; useWorktree?: boolean } = {}) =>
+      api.post(`/api/repos/${id}/tasks`, { message, ...opts }),
     feedback: (id: string, taskId: string, message: string) =>
       api.post(`/api/repos/${id}/tasks/${taskId}/feedback`, { message }),
+    /** Send now, interrupting Claude mid-response the way the CLI does */
+    interrupt: (id: string, taskId: string, message: string) =>
+      api.post(`/api/repos/${id}/tasks/${taskId}/interrupt`, { message }),
+    /** /clear the session's context and wipe the card's transcript */
+    clearSession: (id: string, taskId: string) =>
+      api.post(`/api/repos/${id}/tasks/${taskId}/clear`),
     stopTask: (id: string, taskId: string) =>
       api.post(`/api/repos/${id}/tasks/${taskId}/stop`),
     pauseTask: (id: string, taskId: string) =>

@@ -1,0 +1,228 @@
+I have some griveneces. This project view sessions card removes a lot of abstraction away which i dont like.
+
+
+Example Output of claude  terminal CLI: 
+  
+   Update(apps\server\src\managers\tasks.ts)
+  ⎿  Added 2 lines, removed 2 lines
+      837      }
+      838  
+      839      // Clean up worktree only if no other tasks use this session
+      840 -    if (task.worktreePath && task.branch && task.sessionRef) {                                                                                                     
+      840 +    if (task.worktreePath && branch && task.sessionRef) {                                                                                                          
+      841        const db = getDb();
+      842        const queuedInSession = (db.prepare(
+      843          "SELECT id FROM tasks WHERE session_ref = ? AND id != ? AND status IN ('queued', 'working', 'validating', 'paused')"
+     ...
+      847          try {
+      848            removeWorktree(repo.path, task.worktreePath);
+      849            getDb().prepare('UPDATE worktrees SET active = 0 WHERE task_id = ?').run(taskId);
+      850 -          broker.publish({ type: 'git.branch_created', repoId: repo.id, branch: `removed:${task.branch}` });                                                       
+      850 +          broker.publish({ type: 'git.branch_created', repoId: repo.id, branch: `removed:${branch}` });                                                            
+      851          } catch (e) {
+      852            logger.warn(`Worktree cleanup failed for task ${taskId}`, e);
+      853          }
+
+● Now let's update the prompt to have Claude emit the structured commit message and branch slug lines:
+
+  Read 1 file (ctrl+o to expand)
+
+● Update(prompts\task.md)
+  ⎿  Added 14 lines, removed 1 line
+      39  
+      40  This paragraph is shown to the user as the headline result of your work, so it needs to stand on its own — don't precede it with a bullet-point summary that duplica
+          tes it. Keep everything else concise; the user does not need to know every file you read or every tool call you made.
+      41  
+      42 +After that paragraph, always end your response with exactly these two lines, literally, with nothing after them:                                                    
+      43 +                                                                                                                                                                    
+      44 +COMMIT: <short commit subject describing the actual change>                                                                                                         
+      45 +BRANCH: <short kebab-case slug describing the change>                                                                                                               
+      46 +                                                                                                                                                                    
+      47 +Rules for both lines:                                                                                                                                               
+      44 +COMMIT: <short commit subject describing the actual change>                                                                                                        
+      45 +BRANCH: <short kebab-case slug describing the change>                                                                                                              
+      46 +                                                                                                                                                                    
+      47 +Rules for both lines:                                                                                                                                               
+      48 +- Describe what the change actually does, not the literal wording of the request                                                                                    
+      49 +- COMMIT: imperative mood, lowercase, no trailing period, no prefix, max 50 characters (e.g. "fix reset handler firing twice")                                      
+      50 +- BRANCH: 2-5 words, lowercase, hyphen-separated, no "feature/"/"fix/" prefix (e.g. "fix-reset-handler-double-fire")                                                
+      51 +- No AI attribution, no bot emoji, no markdown, no quotes around the value                                                                                          
+      52 +                                                                                                                                                                    
+      53 +These two lines are parsed by the system (used for the git commit message and branch name) and are stripped before anything is shown to the user, so they must be on
+         + their own lines in exactly that format every time, even for small changes.                                                                                         
+      54 +                                                                                                                                                                    
+      55  ## Commits
+      56  
+      44 -If you create commits:                                                                                                                                              
+      57 +If you create your own commits while working (checkpoints as you go):                                                                                               
+      58  - Use short, lowercase subject lines (e.g. "fix reset handler firing twice")
+      59  - Maximum 50 characters
+      60  - No conventional commit prefix required
+
+  Read 1 file (ctrl+o to expand)
+
+● Bash(cd C:/Users/yeraz/Documents/GitHub/CLAUDECTRL && npx tsc --noEmit -p apps/server/tsconfig.json; echo SERVER_EXIT:$?; npx tsc --noEmit -p apps/web/tsconfig.json;…)
+  ⎿  SERVER_EXIT:0
+  ⎿  (timeout 2m)
+
+● Bash(cd C:/Users/yeraz/Documents/GitHub/CLAUDECTRL && npm test 2>&1 | tail -30)
+  ⎿  > claudectrl@1.0.0 test
+     > npm run test --workspace=apps/server
+     … +25 lines (ctrl+o to expand)
+
+● Bash(cd C:/Users/yeraz/Documents/GitHub/CLAUDECTRL && grep -rn "lastResult:\|last_result" apps/server/src --include=*.ts | grep -v tasks.ts)
+  ⎿  apps/server/src/db/schema.ts:44:          last_result TEXT,
+
+● Good — dbRowToTask is the single source of truth, no other place constructs Task objects manually. Everything's wired consistently.
+
+● Bash(cd C:/Users/yeraz/Documents/GitHub/CLAUDECTRL && grep -rn "editTask\b" apps/server/src/managers/tasks.ts | head -5)
+  ⎿  (No output)
+
+● Bash(cd C:/Users/yeraz/Documents/GitHub/CLAUDECTRL && grep -n "export async function editTask\|export function editTask" apps/server/src/managers/tasks.ts)
+  ⎿  No matches found
+
+  Read 1 file (ctrl+o to expand)
+
+● This all looks correct and consistent. Let's do a final full test run to confirm nothing else broke:
+
+● Bash(cd C:/Users/yeraz/Documents/GitHub/CLAUDECTRL && npm test 2>&1 | tail -15)
+  ⎿  stdout | src/tests/config.test.ts > config loader > loads from YAML file
+     [config] loaded from C:\Users\yeraz\AppData\Local\Temp\test-cfg-1789176113094.yml — repos.directory=/tmp/repos
+     … +11 lines (ctrl+o to expand)
+
+● All 13 tests pass and both packages typecheck clean.
+
+  Summary of changes:
+
+  1. prompts/task.md: Claude must now end every response with two literal lines, COMMIT: <subject> and BRANCH: <slug>, describing what the change actually does — not a restatement
+     of the request. Rules are spelled out (imperative mood, ≤50 chars, lowercase, kebab-case, no AI attribution).
+  2. apps/server/src/managers/tasks.ts: Added extractCommitMetadata() which pulls those two lines out of Claude's final response via regex, strips them from what's saved as
+     lastResult/shown in chat, and stores them on the task (commitMessage, branchSlug — new DB columns via migration 003_commit_message_and_branch_slug in schema.ts, new fields on
+     the shared Task type).
+  3. approveTask: now uses task.commitMessage (falling back to task.title if Claude didn't produce one) for the actual git commit, and renames the branch to
+     <original-prefix>/<claude-slug> via a new renameBranch() helper in git.ts right before merging — so both the commit message and the branch name reflect what was actually built
+     instead of the first words of your request.
+  4. apps/web/src/utils/parseOutput.ts: the live paragraph-extraction used for the chat bubble also filters out COMMIT:/BRANCH: lines, so they never flash in the UI while streaming,
+     before the server-side strip has happened.
+
+  Since buildPrompt() re-sends the wrapper on every invocation (queued task, feedback, resume), this applies every time, and since only the last task in a queue chain reaches
+  approval, its commit message/branch slug — describing the final piece of work — is what gets used.
+
+✻ Cogitated for 5m 3s · done 6:22 PM
+
+※ recap: Improving ClaudeCTRL's review workflow: commit messages and branch names are now generated by Claude itself instead of copying your raw request text. That change is done 
+  and tests pass — next step is to test it live in the app. (disable recaps in /config)
+
+
+  
+
+Example Output of wanted ClaudeCTRL session card text claude left side
+
+Update(apps\server\src\managers\tasks.ts)
+  ⎿  Added 2 lines, removed 2 lines
+
+● Now let's update the prompt to have Claude emit the structured commit message and branch slug lines:
+
+  Read 1 file 
+
+● Update(prompts\task.md)
+  ⎿  Added 14 lines, removed 1 line
+                                                                                     
+  Read 1 file
+
+● Bashing
+
+● Good — dbRowToTask is the single source of truth, no other place constructs Task objects manually. Everything's wired consistently.
+
+● Bashing
+
+  Read 1 file 
+
+● This all looks correct and consistent. Let's do a final full test run to confirm nothing else broke:
+
+● Bashing
+
+● All 13 tests pass and both packages typecheck clean.
+
+  Summary of changes:
+
+  1. prompts/task.md: Claude must now end every response with two literal lines, COMMIT: <subject> and BRANCH: <slug>, describing what the change actually does — not a restatement
+     of the request. Rules are spelled out (imperative mood, ≤50 chars, lowercase, kebab-case, no AI attribution).
+  2. apps/server/src/managers/tasks.ts: Added extractCommitMetadata() which pulls those two lines out of Claude's final response via regex, strips them from what's saved as
+     lastResult/shown in chat, and stores them on the task (commitMessage, branchSlug — new DB columns via migration 003_commit_message_and_branch_slug in schema.ts, new fields on
+     the shared Task type).
+  3. approveTask: now uses task.commitMessage (falling back to task.title if Claude didn't produce one) for the actual git commit, and renames the branch to
+     <original-prefix>/<claude-slug> via a new renameBranch() helper in git.ts right before merging — so both the commit message and the branch name reflect what was actually built
+     instead of the first words of your request.
+  4. apps/web/src/utils/parseOutput.ts: the live paragraph-extraction used for the chat bubble also filters out COMMIT:/BRANCH: lines, so they never flash in the UI while streaming,
+     before the server-side strip has happened.
+
+  Since buildPrompt() re-sends the wrapper on every invocation (queued task, feedback, resume), this applies every time, and since only the last task in a queue chain reaches
+  approval, its commit message/branch slug — describing the final piece of work — is what gets used.
+
+✻ Cogitated for 5m 3s · done 6:22 PM
+
+※ recap: Improving ClaudeCTRL's review workflow: commit messages and branch names are now generated by Claude itself instead of copying your raw request text. That change is done 
+  and tests pass — next step is to test it live in the app. (disable recaps in /config)
+
+  
+
+The wanted ClaudeCTRL session card is essentially a compressed, UI-friendly version of the raw Claude terminal output. The main differences I notice are:
+
+Actual file edits are preserved.
+Raw:
+Update(apps\server\src\managers\tasks.ts) + Added 2 lines, removed 2 lines
+Wanted: same thing. This is useful progress information.
+The actual diff is removed.
+The terminal shows individual - and + source lines. The card only says the file was updated and how many lines changed.
+
+Claude's narration is preserved.
+Things like:
+
+"Now let's update the prompt..."
+"Good — dbRowToTask is the single source of truth..."
+
+remain visible. So you don't want just tool activity; you want Claude's reasoning/status narration too.
+
+Read operations are preserved but simplified.
+Raw:
+Read 1 file (ctrl+o to expand)
+Wanted:
+Read 1 file
+
+Terminal-specific interaction hints disappear.
+
+Bash commands become just Bashing.
+This is probably the biggest transformation. Instead of dumping:
+Bash(cd C:/Users/... && npm test...)
+and its output, the card simply displays:
+● Bashing
+That prevents massive command/output blocks from taking over the card.
+Bash results are mostly suppressed, but Claude's interpretation remains. For example, rather than showing all test output, you retain Claude's subsequent:
+All 13 tests pass and both packages typecheck clean.
+That's much more useful to a person watching the session.
+The final response is preserved essentially in full.
+The Summary of changes, numbered items, queue explanation, timing, and recap all remain.
+
+So I would define the desired behavior as:
+
+ClaudeCTRL should display Claude's conversational/status text + compact tool activity, while stripping the noisy internals of tool execution.
+
+The rough transformation rules are:
+
+Update(...) → keep filename/path + added/removed count
+actual diff → hide
+Read N files (ctrl+o...) → Read N files
+Bash(command) → Bashing
+bash stdout/stderr → hide
+Claude narration → keep
+final summary/result → keep
+terminal UI hints like ctrl+o to expand → hide
+timing/recap → currently kept in your wanted example
+
+One subtle point: this is not really summarization. You don't want ClaudeCTRL generating its own condensed version. You want a deterministic parser/filter over Claude CLI output, preserving Claude's words while collapsing tool noise. That distinction matters for how you should implement it.
+
+
+
+ALso adds a Clear button → runs /clear on the active Claude session.
+the user input messesges on the right and claude output on the left should be preserved 

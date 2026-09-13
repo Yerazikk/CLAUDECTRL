@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import type { Repository, Task, Session, UsageSnapshot, Preview } from '@claudectrl/shared';
+import type { Repository, Task, Session, UsageSnapshot, Preview, TranscriptEntry } from '@claudectrl/shared';
 import type { ServerEvent, StateSnapshot } from '@claudectrl/shared';
-import { type ParsedOutput, createParsedOutput, updateParsedOutput } from '../utils/parseOutput';
+import { mergeEntry } from '../utils/transcript';
+import { api } from '../utils/api';
 
 export interface AppState {
   repos: Repository[];
@@ -125,10 +126,10 @@ export function useStore() {
   const [state, setState] = useState<AppState>(initialState);
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const taskOutputs = useRef<Map<string, string[]>>(new Map());
-  const [taskOutputMap, setTaskOutputMap] = useState<Map<string, string[]>>(new Map());
-  const parsedOutputs = useRef<Map<string, ParsedOutput>>(new Map());
-  const [parsedOutputVer, setParsedOutputVer] = useState(0);
+  // Transcript entries per task. A session's card stitches together the tasks
+  // that belong to it, so a queue reads as one continuous conversation.
+  const [transcripts, setTranscripts] = useState<Map<string, TranscriptEntry[]>>(new Map());
+  const requestedHistory = useRef<Set<string>>(new Set());
 
   const connect = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) return;
@@ -147,23 +148,31 @@ export function useStore() {
     ws.onmessage = (e) => {
       try {
         const event = JSON.parse(e.data) as ServerEvent;
-        if (event.type === 'task.output') {
-          const lines = taskOutputs.current.get(event.taskId) ?? [];
-          lines.push(event.line);
-          if (lines.length > 500) lines.splice(0, lines.length - 500);
-          taskOutputs.current.set(event.taskId, lines);
-          setTaskOutputMap(new Map(taskOutputs.current));
 
-          // Update parsed output incrementally
-          let parsed = parsedOutputs.current.get(event.taskId);
-          if (!parsed) {
-            parsed = createParsedOutput();
-            parsedOutputs.current.set(event.taskId, parsed);
-          }
-          updateParsedOutput(parsed, event.line);
-          setParsedOutputVer(v => v + 1);
+        if (event.type === 'task.transcript') {
+          const { taskId } = event.entry;
+          setTranscripts((prev) => {
+            const next = new Map(prev);
+            next.set(taskId, mergeEntry(prev.get(taskId) ?? [], event.entry));
+            return next;
+          });
           return;
         }
+
+        if (event.type === 'task.transcript_cleared') {
+          setTranscripts((prev) => {
+            const next = new Map(prev);
+            // A clear covers the whole session, so drop every task we hold for it
+            for (const [taskId, entries] of prev) {
+              const belongs = taskId === event.taskId
+                || (event.sessionRef !== null && entries.some((e) => e.sessionRef === event.sessionRef));
+              if (belongs) next.set(taskId, []);
+            }
+            return next;
+          });
+          return;
+        }
+
         setState((s) => applyEvent(s, event));
       } catch {}
     };
@@ -187,14 +196,40 @@ export function useStore() {
     };
   }, [connect]);
 
-  const getTaskOutput = useCallback((taskId: string): string[] => {
-    return taskOutputMap.get(taskId) ?? [];
-  }, [taskOutputMap]);
+  /**
+   * Load a task's stored transcript once, so a card is complete after a page
+   * reload instead of only showing what streamed in live.
+   */
+  const loadTranscript = useCallback((repoId: string, taskId: string) => {
+    if (requestedHistory.current.has(taskId)) return;
+    requestedHistory.current.add(taskId);
+    api.repos.transcript(repoId, taskId)
+      .then((entries) => {
+        setTranscripts((prev) => {
+          const next = new Map(prev);
+          // Live entries may have landed while this was in flight — merge, don't replace
+          let merged = entries;
+          for (const live of prev.get(taskId) ?? []) merged = mergeEntry(merged, live);
+          next.set(taskId, merged);
+          return next;
+        });
+      })
+      .catch(() => requestedHistory.current.delete(taskId));
+  }, []);
 
-  const getTaskParsed = useCallback((taskId: string): ParsedOutput => {
-    return parsedOutputs.current.get(taskId) ?? createParsedOutput();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [parsedOutputVer]);
+  /** The merged transcript for a set of tasks (one session's worth). */
+  const getTranscript = useCallback((taskIds: string[]): TranscriptEntry[] => {
+    const all: TranscriptEntry[] = [];
+    const seen = new Set<number>();
+    for (const id of taskIds) {
+      for (const entry of transcripts.get(id) ?? []) {
+        if (seen.has(entry.seq)) continue;
+        seen.add(entry.seq);
+        all.push(entry);
+      }
+    }
+    return all.sort((a, b) => a.seq - b.seq);
+  }, [transcripts]);
 
-  return { state, getTaskOutput, getTaskParsed };
+  return { state, getTranscript, loadTranscript };
 }

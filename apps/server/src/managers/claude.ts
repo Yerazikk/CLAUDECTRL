@@ -1,6 +1,6 @@
 import { spawn, ChildProcess, execSync } from 'child_process';
 import { logger } from '../utils/logger';
-import { broker } from '../services/events';
+import { ingestClaudeLine } from './transcript';
 
 // Kill if no stdout for this long — Claude actively working always produces output
 const INACTIVITY_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes of silence = stuck
@@ -142,7 +142,9 @@ export async function runClaude(opts: ClaudeRunOptions): Promise<ClaudeRunResult
         if (!trimmed) continue;
 
         if (onOutput) onOutput(trimmed);
-        broker.publish({ type: 'task.output', taskId, line: trimmed });
+        // Raw stream-json never leaves the server — the transcript feed carries
+        // the compressed version of this line to the UI instead.
+        ingestClaudeLine(taskId, trimmed);
 
         try {
           const event: ClaudeStreamEvent = JSON.parse(trimmed);

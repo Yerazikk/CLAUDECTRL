@@ -25,7 +25,11 @@ import {
   deleteTask,
   retryTask,
   editQueuedTask,
+  interruptWithMessage,
+  clearSessionContext,
 } from '../managers/tasks';
+import { getTranscript } from '../managers/transcript';
+import { getTaskMessages, getSessionMessages } from '../managers/conversation';
 import { getDb } from '../db';
 import { getActivePreviewForRepo } from '../managers/preview';
 import { refreshUsage } from '../managers/usage';
@@ -57,10 +61,14 @@ export async function reposRoutes(app: FastifyInstance): Promise<void> {
     return getRepoSessions(req.params.id);
   });
 
-  // Get repo messages for a task
-  app.get<{ Params: { id: string; taskId: string } }>('/api/repos/:id/tasks/:taskId/messages', async (req, reply) => {
-    const db = getDb();
-    return db.prepare('SELECT * FROM messages WHERE task_id = ? ORDER BY created_at ASC').all(req.params.taskId);
+  // The conversation for one task
+  app.get<{ Params: { id: string; taskId: string } }>('/api/repos/:id/tasks/:taskId/messages', async (req) => {
+    return getTaskMessages(req.params.taskId);
+  });
+
+  // The conversation across a whole session (queued follow-ups included)
+  app.get<{ Params: { id: string; sessionRef: string } }>('/api/repos/:id/sessions/:sessionRef/messages', async (req) => {
+    return getSessionMessages(req.params.sessionRef);
   });
 
   // Get task preview
@@ -68,16 +76,60 @@ export async function reposRoutes(app: FastifyInstance): Promise<void> {
     return getActivePreviewForRepo(req.params.id);
   });
 
+  // The session's compressed transcript (whole session, not just this task)
+  app.get<{ Params: { id: string; taskId: string } }>('/api/repos/:id/tasks/:taskId/transcript', async (req, reply) => {
+    const task = getTask(req.params.taskId);
+    if (!task) return reply.status(404).send({ error: 'Task not found' });
+    return getTranscript(req.params.taskId);
+  });
+
   // Submit task command (optionally within an existing session)
-  app.post<{ Params: { id: string }; Body: { message: string; sessionRef?: string; model?: string } }>(
+  app.post<{
+    Params: { id: string };
+    Body: { message: string; sessionRef?: string; model?: string; useWorktree?: boolean };
+  }>(
     '/api/repos/:id/tasks',
     async (req, reply) => {
-      const { message, sessionRef, model } = req.body;
+      const { message, sessionRef, model, useWorktree } = req.body;
       if (!message?.trim()) return reply.status(400).send({ error: 'message required' });
       const repo = getRepo(req.params.id);
       if (!repo) return reply.status(404).send({ error: 'Not found' });
-      const task = await createTask(req.params.id, message.trim(), sessionRef, model);
+      const task = await createTask(req.params.id, message.trim(), {
+        sessionRef,
+        model,
+        useWorktree: useWorktree ?? true,
+      });
       return task;
+    }
+  );
+
+  // Send a message the CLI way: interrupt whatever Claude is doing and answer this
+  app.post<{ Params: { id: string; taskId: string }; Body: { message: string } }>(
+    '/api/repos/:id/tasks/:taskId/interrupt',
+    async (req, reply) => {
+      const { message } = req.body;
+      if (!message?.trim()) return reply.status(400).send({ error: 'message required' });
+      const task = getTask(req.params.taskId);
+      if (!task) return reply.status(404).send({ error: 'Task not found' });
+      try {
+        await interruptWithMessage(req.params.taskId, message.trim());
+        return { ok: true };
+      } catch (e: unknown) {
+        return reply.status(400).send({ error: e instanceof Error ? e.message : String(e) });
+      }
+    }
+  );
+
+  // /clear the session's Claude context and wipe the card's transcript
+  app.post<{ Params: { id: string; taskId: string } }>(
+    '/api/repos/:id/tasks/:taskId/clear',
+    async (req, reply) => {
+      try {
+        await clearSessionContext(req.params.taskId);
+        return { ok: true };
+      } catch (e: unknown) {
+        return reply.status(400).send({ error: e instanceof Error ? e.message : String(e) });
+      }
     }
   );
 

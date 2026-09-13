@@ -28,7 +28,7 @@ function useCommandPalette(onOpen: () => void) {
 }
 
 export default function App() {
-  const { state, getTaskParsed } = useStore();
+  const { state, getTranscript, loadTranscript } = useStore();
   const [view, setView] = useState<View>({ type: 'dashboard' });
   const [openTabs, setOpenTabs] = useState<OpenTab[]>([]);
   const [pendingOpenId, setPendingOpenId] = useState<string | null>(null);
@@ -304,7 +304,8 @@ export default function App() {
             tasks={repoTasks}
             sessions={repoSessions}
             onBack={() => setView({ type: 'dashboard' })}
-            getTaskParsed={getTaskParsed}
+            getTranscript={getTranscript}
+            loadTranscript={loadTranscript}
           />
         )}
 
